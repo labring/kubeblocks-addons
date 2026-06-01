@@ -55,22 +55,159 @@ extract_lb_host_by_svc_name() {
   done
 }
 
+replace_user_entry_in_acl() {
+  local username="$1"
+  local new_entry="$2"
+  local tmp_acl_file
+
+  tmp_acl_file="$(mktemp "${redis_acl_file}.XXXXXX")" || {
+    echo "Failed to create temporary ACL file when updating user $username" >&2
+    return 1
+  }
+  if ! sed "/^user $username /d" "$redis_acl_file" > "$tmp_acl_file"; then
+    echo "Failed to rewrite ACL file for user $username" >&2
+    rm -f "$tmp_acl_file"
+    return 1
+  fi
+  if ! printf '%s\n' "$new_entry" >> "$tmp_acl_file"; then
+    echo "Failed to append updated ACL entry for user $username" >&2
+    rm -f "$tmp_acl_file"
+    return 1
+  fi
+  if ! cp "$redis_acl_file" "$redis_acl_file_bak"; then
+    echo "Failed to backup ACL file to $redis_acl_file_bak for user $username" >&2
+    rm -f "$tmp_acl_file"
+    return 1
+  fi
+  if ! mv "$tmp_acl_file" "$redis_acl_file"; then
+    echo "Failed to replace ACL file for user $username, original backup kept at $redis_acl_file_bak" >&2
+    rm -f "$tmp_acl_file"
+    return 1
+  fi
+}
+
+# Ensure password exists in user entry, preserving any extra passwords added by user
+# This allows users to add passwords via ACL SETUSER + ACL SAVE and have them persist
+# Note: ACL SAVE writes passwords in SHA256 hash format (#hash), while the startup
+# script uses plaintext format (>password). We must handle both formats.
+ensure_password_in_user() {
+  local username="$1"
+  local password="$2"
+  local permissions="$3"
+
+  # Compute SHA256 hash of the password for matching against ACL SAVE'd entries
+  local password_hash
+  password_hash=$(printf '%s' "$password" | sha256sum | cut -d' ' -f1)
+
+  if [ -f "$redis_acl_file" ] && grep -q "^user $username " "$redis_acl_file"; then
+    # User exists in acl file, check if this password is already present
+    local existing_entry
+    existing_entry="$(grep "^user $username " "$redis_acl_file")"
+    # Check both plaintext (>password) and hash (#sha256) formats
+    if printf '%s\n' "$existing_entry" | grep -F -q -- ">$password" || \
+       printf '%s\n' "$existing_entry" | grep -F -q -- "#$password_hash"; then
+      echo "Password from Secret already exists for user $username, preserving existing entry"
+      # Update permissions if they differ from the configured ones
+      if [ -n "$permissions" ]; then
+        # Rebuild entry: keep all fields up to the last password (tokens starting with '>' or '#'),
+        # then append the configured permissions.
+        local entry_prefix
+        entry_prefix=$(printf '%s\n' "$existing_entry" | awk '{
+          last = 0;
+          for (i = 1; i <= NF; i++) {
+            if ($i ~ /^[>#]/) {
+              last = i;
+            }
+          }
+          if (last == 0) {
+            print $0;
+          } else {
+            for (i = 1; i <= last; i++) {
+              printf "%s%s", $i, (i < last ? " " : "");
+            }
+          }
+        }')
+        if [ -n "$entry_prefix" ]; then
+          local new_entry="$entry_prefix"
+          if [ -n "$permissions" ]; then
+            new_entry="$entry_prefix $permissions"
+          fi
+          if replace_user_entry_in_acl "$username" "$new_entry"; then
+            echo "Updated permissions for existing user $username from Secret"
+          else
+            return 1
+          fi
+        fi
+      fi
+    else
+      # Password not present, need to add it to existing user
+      # Preserve all existing passwords (both > plaintext and # hash formats)
+      local entry_prefix
+      entry_prefix=$(printf '%s\n' "$existing_entry" | awk -v username="$username" -v password="$password" '{
+        on_idx = 0;
+        for (i = 1; i <= NF; i++) {
+          if ($i == "on" || $i == "off") {
+            on_idx = i;
+            break;
+          }
+        }
+        if (on_idx == 0) {
+          printf "user %s on >%s", username, password;
+          for (i = 1; i <= NF; i++) {
+            if ($i ~ /^[>#]/) {
+              printf " %s", $i;
+            }
+          }
+          printf "\n";
+          next;
+        }
+        for (i = 1; i <= on_idx; i++) {
+          printf "%s%s", $i, (i < on_idx ? " " : "");
+        }
+        printf " >%s", password;
+        for (i = on_idx + 1; i <= NF; i++) {
+          if ($i ~ /^[>#]/) {
+            printf " %s", $i;
+          }
+        }
+        printf "\n";
+      }')
+      if [ -n "$entry_prefix" ]; then
+        local new_entry="$entry_prefix"
+        if [ -n "$permissions" ]; then
+          new_entry="$entry_prefix $permissions"
+        fi
+        if replace_user_entry_in_acl "$username" "$new_entry"; then
+          echo "Added Secret password to existing user $username, preserved other passwords and updated permissions"
+        else
+          return 1
+        fi
+      fi
+    fi
+  else
+    # User doesn't exist, create new entry
+    local new_entry="user $username on >$password"
+    if [ -n "$permissions" ]; then
+      new_entry="$new_entry $permissions"
+    fi
+    printf '%s\n' "$new_entry" >> "$redis_acl_file"
+    echo "Created new user $username with password from Secret"
+  fi
+}
+
 build_redis_default_accounts() {
   unset_xtrace_when_ut_mode_false
   if ! is_empty "$REDIS_REPL_PASSWORD"; then
     echo "masteruser $REDIS_REPL_USER" >> $redis_real_conf
     echo "masterauth $REDIS_REPL_PASSWORD" >> $redis_real_conf
-    redis_repl_password_sha256=$(echo -n "$REDIS_REPL_PASSWORD" | sha256sum | cut -d' ' -f1)
-    echo "user $REDIS_REPL_USER on +psync +replconf +ping #$redis_repl_password_sha256" >> $redis_acl_file
+    ensure_password_in_user "$REDIS_REPL_USER" "$REDIS_REPL_PASSWORD" "+psync +replconf +ping"
   fi
   if ! is_empty "$REDIS_SENTINEL_PASSWORD"; then
-    redis_sentinel_password_sha256=$(echo -n "$REDIS_SENTINEL_PASSWORD" | sha256sum | cut -d' ' -f1)
-    echo "user $REDIS_SENTINEL_USER on allchannels +multi +slaveof +ping +exec +subscribe +config|rewrite +role +publish +info +client|setname +client|kill +script|kill #$redis_sentinel_password_sha256" >> $redis_acl_file
+    ensure_password_in_user "$REDIS_SENTINEL_USER" "$REDIS_SENTINEL_PASSWORD" "allchannels +multi +slaveof +ping +exec +subscribe +config|rewrite +role +publish +info +client|setname +client|kill +script|kill"
   fi
   if ! is_empty "$REDIS_DEFAULT_PASSWORD"; then
     echo "protected-mode yes" >> $redis_real_conf
-    redis_password_sha256=$(echo -n "$REDIS_DEFAULT_PASSWORD" | sha256sum | cut -d' ' -f1)
-    echo "user default on #$redis_password_sha256 ~* &* +@all " >> $redis_acl_file
+    ensure_password_in_user "default" "$REDIS_DEFAULT_PASSWORD" "~* &* +@all"
   else
     echo "protected-mode no" >> $redis_real_conf
   fi
@@ -81,7 +218,17 @@ build_redis_default_accounts() {
 
 build_announce_ip_and_port() {
   # build announce ip and port according to whether the announce addr is exist
-  if ! is_empty "$redis_announce_host_value" && ! is_empty "$redis_announce_port_value"; then
+  # trim whitespace to avoid writing invalid redis.conf entries like "replica-announce-port" without a value
+  redis_announce_host_value="${redis_announce_host_value//[[:space:]]/}"
+  redis_announce_port_value="${redis_announce_port_value//[[:space:]]/}"
+  if [[ -z "$redis_announce_host_value" || -z "$redis_announce_port_value" || ! "$redis_announce_port_value" =~ ^[0-9]+$ ]]; then
+    if [[ -n "$redis_announce_host_value" || -n "$redis_announce_port_value" ]]; then
+      echo "Invalid redis announce addr, host='$redis_announce_host_value', port='$redis_announce_port_value'. Fallback to pod IP/FQDN."
+    fi
+    redis_announce_host_value=""
+    redis_announce_port_value=""
+  fi
+  if [[ -n "$redis_announce_host_value" && -n "$redis_announce_port_value" ]]; then
     echo "redis use nodeport $redis_announce_host_value:$redis_announce_port_value to announce"
     {
       echo "replica-announce-port $redis_announce_port_value"
@@ -134,12 +281,13 @@ build_replicaof_config() {
 }
 
 rebuild_redis_acl_file() {
-  if [ -f $redis_acl_file ]; then
-    sed "/user default on/d" $redis_acl_file > $redis_acl_file_bak && mv $redis_acl_file_bak $redis_acl_file
-    sed "/user $REDIS_REPL_USER on/d" $redis_acl_file > $redis_acl_file_bak && mv $redis_acl_file_bak $redis_acl_file
-    sed "/user $REDIS_SENTINEL_USER on/d" $redis_acl_file > $redis_acl_file_bak && mv $redis_acl_file_bak $redis_acl_file
+  # Preserve existing acl file to keep user-added passwords
+  # The ensure_password_in_user function will handle adding/updating passwords
+  if [ -f "$redis_acl_file" ]; then
+    echo "rebuild_redis_acl_file: preserving existing acl file with user passwords"
   else
-    touch $redis_acl_file
+    touch "$redis_acl_file"
+    echo "rebuild_redis_acl_file: created new acl file"
   fi
 }
 
