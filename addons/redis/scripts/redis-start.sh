@@ -41,6 +41,48 @@ load_redis_template_conf() {
   echo "include $redis_template_conf" >> $redis_real_conf
 }
 
+redis_module_exists_in_conf() {
+  local module="$1"
+  local conf_file
+
+  for conf_file in "$redis_real_conf" "$redis_template_conf"; do
+    [ -f "$conf_file" ] || continue
+    awk -v module="$module" '
+      /^[[:space:]]*#/ { next }
+      tolower($1) == "loadmodule" {
+        module_path = $2
+        gsub(/^"|"$/, "", module_path)
+        if (module_path == module) {
+          found = 1
+        }
+      }
+      END { exit found ? 0 : 1 }
+    ' "$conf_file" && return 0
+  done
+
+  return 1
+}
+
+append_redis_module_arg() {
+  local module="$1"
+  local module_args
+
+  shift
+  module_args="$*"
+  [ -f "$module" ] || return 0
+
+  if redis_module_exists_in_conf "$module"; then
+    echo "Skip loading Redis module $module from command line because it already exists in redis config."
+    return 0
+  fi
+
+  exec_cmd="$exec_cmd --loadmodule $module"
+  if [ -n "$module_args" ]; then
+    exec_cmd="$exec_cmd $module_args"
+  fi
+  return 0
+}
+
 extract_lb_host_by_svc_name() {
   local svc_name="$1"
   for lb_composed_name in $(echo "$REDIS_LB_ADVERTISED_HOST" | tr ',' '\n' ); do
@@ -452,24 +494,12 @@ start_redis_server() {
        module_path="/usr/local/lib/redis/modules"
     fi
     exec_cmd="exec redis-server /etc/redis/redis.conf"
-    if [ -f ${module_path}/redisearch.so ]; then
-        exec_cmd="$exec_cmd --loadmodule ${module_path}/redisearch.so ${REDISEARCH_ARGS}"
-    fi
-    if [ -f ${module_path}/redistimeseries.so ]; then
-        exec_cmd="$exec_cmd --loadmodule ${module_path}/redistimeseries.so ${REDISTIMESERIES_ARGS}"
-    fi
-    if [ -f ${module_path}/rejson.so ]; then
-        exec_cmd="$exec_cmd --loadmodule ${module_path}/rejson.so ${REDISJSON_ARGS}"
-    fi
-    if [ -f ${module_path}/redisbloom.so ]; then
-        exec_cmd="$exec_cmd --loadmodule ${module_path}/redisbloom.so ${REDISBLOOM_ARGS}"
-    fi
-    if [ -f ${module_path}/redisgraph.so ]; then
-        exec_cmd="$exec_cmd --loadmodule ${module_path}/redisgraph.so ${REDISGRAPH_ARGS}"
-    fi
-    if [ -f ${module_path}/rediscompat.so ]; then
-        exec_cmd="$exec_cmd --loadmodule ${module_path}/rediscompat.so"
-    fi
+    append_redis_module_arg "${module_path}/redisearch.so" "${REDISEARCH_ARGS}"
+    append_redis_module_arg "${module_path}/redistimeseries.so" "${REDISTIMESERIES_ARGS}"
+    append_redis_module_arg "${module_path}/rejson.so" "${REDISJSON_ARGS}"
+    append_redis_module_arg "${module_path}/redisbloom.so" "${REDISBLOOM_ARGS}"
+    append_redis_module_arg "${module_path}/redisgraph.so" "${REDISGRAPH_ARGS}"
+    append_redis_module_arg "${module_path}/rediscompat.so"
     # NOTE: in replication mode, load this module will lead a memory leak for slave instance.
     #if [ -f ${module_path}/redisgears.so ]; then
     #    exec_cmd="$exec_cmd --loadmodule ${module_path}/redisgears.so v8-plugin-path ${module_path}/libredisgears_v8_plugin.so ${REDISGEARS_ARGS}"
@@ -529,15 +559,6 @@ parse_redis_announce_addr() {
 
 # build redis.conf
 build_redis_conf() {
-  # Truncate before building to guarantee a clean slate on every container start.
-  # /etc/redis/ is an emptyDir that survives container restarts (but not pod
-  # deletion). Without this truncation, CONFIG REWRITE (triggered by Sentinel)
-  # writes 'loadmodule' back into redis.conf; on the next container restart the
-  # accumulated 'loadmodule' line stays in the file, and start_redis_server()
-  # also passes --loadmodule via CLI, causing the module to load twice.
-  # Redis exits on the second load attempt → CrashLoopBackOff.
-  # See: https://github.com/apecloud/kubeblocks-addons/issues/2686
-  > "$redis_real_conf"
   load_redis_template_conf
   build_announce_ip_and_port
   build_redis_service_port
