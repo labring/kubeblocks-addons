@@ -165,6 +165,47 @@ load_redis_template_conf() {
   echo "include /etc/conf/redis.conf" >> /etc/redis/redis.conf
 }
 
+redis_module_exists_in_conf() {
+  local module="$1"
+  local conf_file
+
+  for conf_file in /etc/redis/redis.conf /etc/conf/redis.conf; do
+    [ -f "$conf_file" ] || continue
+    awk -v module="$module" '
+      /^[[:space:]]*#/ { next }
+      tolower($1) == "loadmodule" {
+        module_path = $2
+        gsub(/^"|"$/, "", module_path)
+        if (module_path == module) {
+          found = 1
+        }
+      }
+      END { exit found ? 0 : 1 }
+    ' "$conf_file" && return 0
+  done
+
+  return 1
+}
+
+append_redis_module_arg() {
+  local module="$1"
+  local module_args
+
+  shift
+  module_args="$*"
+  [ -f "$module" ] || return 0
+
+  if redis_module_exists_in_conf "$module"; then
+    echo "Skip loading Redis module $module from command line because it already exists in redis config."
+    return 0
+  fi
+
+  exec_cmd="$exec_cmd --loadmodule $module"
+  if [ -n "$module_args" ]; then
+    exec_cmd="$exec_cmd $module_args"
+  fi
+}
+
 build_redis_default_accounts() {
   set +x
   if [ -n "$REDIS_REPL_PASSWORD" ]; then
@@ -425,27 +466,13 @@ check_pod_is_primary_in_kernel() {
 
 start_redis_server() {
     exec_cmd="exec redis-server /etc/redis/redis.conf"
-    if [ -f /opt/redis-stack/lib/redisearch.so ]; then
-        exec_cmd="$exec_cmd --loadmodule /opt/redis-stack/lib/redisearch.so ${REDISEARCH_ARGS}"
-    fi
-    if [ -f /opt/redis-stack/lib/redistimeseries.so ]; then
-        exec_cmd="$exec_cmd --loadmodule /opt/redis-stack/lib/redistimeseries.so ${REDISTIMESERIES_ARGS}"
-    fi
-    if [ -f /opt/redis-stack/lib/rejson.so ]; then
-        exec_cmd="$exec_cmd --loadmodule /opt/redis-stack/lib/rejson.so ${REDISJSON_ARGS}"
-    fi
-    if [ -f /opt/redis-stack/lib/redisbloom.so ]; then
-        exec_cmd="$exec_cmd --loadmodule /opt/redis-stack/lib/redisbloom.so ${REDISBLOOM_ARGS}"
-    fi
-    if [ -f /opt/redis-stack/lib/redisgraph.so ]; then
-        exec_cmd="$exec_cmd --loadmodule /opt/redis-stack/lib/redisgraph.so ${REDISGRAPH_ARGS}"
-    fi
-    if [ -f /opt/redis-stack/lib/rediscompat.so ]; then
-        exec_cmd="$exec_cmd --loadmodule /opt/redis-stack/lib/rediscompat.so"
-    fi
-    if [ -f /opt/redis-stack/lib/redisgears.so ]; then
-        exec_cmd="$exec_cmd --loadmodule /opt/redis-stack/lib/redisgears.so v8-plugin-path /opt/redis-stack/lib/libredisgears_v8_plugin.so ${REDISGEARS_ARGS}"
-    fi
+    append_redis_module_arg /opt/redis-stack/lib/redisearch.so "${REDISEARCH_ARGS}"
+    append_redis_module_arg /opt/redis-stack/lib/redistimeseries.so "${REDISTIMESERIES_ARGS}"
+    append_redis_module_arg /opt/redis-stack/lib/rejson.so "${REDISJSON_ARGS}"
+    append_redis_module_arg /opt/redis-stack/lib/redisbloom.so "${REDISBLOOM_ARGS}"
+    append_redis_module_arg /opt/redis-stack/lib/redisgraph.so "${REDISGRAPH_ARGS}"
+    append_redis_module_arg /opt/redis-stack/lib/rediscompat.so
+    append_redis_module_arg /opt/redis-stack/lib/redisgears.so "v8-plugin-path /opt/redis-stack/lib/libredisgears_v8_plugin.so ${REDISGEARS_ARGS}"
     echo "Starting redis server cmd: $exec_cmd"
     eval "$exec_cmd"
 }
