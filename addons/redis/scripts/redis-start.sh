@@ -6,6 +6,134 @@ declare -g primary_port
 declare -g default_initialize_pod_ordinal
 declare -g headless_postfix="headless"
 
+redis_acl_file="/data/users.acl"
+redis_acl_file_bak="/data/users.acl.bak"
+
+replace_user_entry_in_acl() {
+  local username="$1"
+  local new_entry="$2"
+  local tmp_acl_file
+
+  tmp_acl_file="$(mktemp "${redis_acl_file}.XXXXXX")" || {
+    echo "Failed to create temporary ACL file when updating user $username" >&2
+    return 1
+  }
+  if ! sed "/^user $username /d" "$redis_acl_file" > "$tmp_acl_file"; then
+    echo "Failed to rewrite ACL file for user $username" >&2
+    rm -f "$tmp_acl_file"
+    return 1
+  fi
+  if ! printf '%s\n' "$new_entry" >> "$tmp_acl_file"; then
+    echo "Failed to append updated ACL entry for user $username" >&2
+    rm -f "$tmp_acl_file"
+    return 1
+  fi
+  if ! cp "$redis_acl_file" "$redis_acl_file_bak"; then
+    echo "Failed to backup ACL file to $redis_acl_file_bak for user $username" >&2
+    rm -f "$tmp_acl_file"
+    return 1
+  fi
+  if ! mv "$tmp_acl_file" "$redis_acl_file"; then
+    echo "Failed to replace ACL file for user $username, original backup kept at $redis_acl_file_bak" >&2
+    rm -f "$tmp_acl_file"
+    return 1
+  fi
+}
+
+ensure_password_in_user() {
+  local username="$1"
+  local password="$2"
+  local permissions="$3"
+  local password_hash=""
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    password_hash=$(printf '%s' "$password" | sha256sum | cut -d' ' -f1)
+  fi
+
+  if [ -f "$redis_acl_file" ] && grep -q "^user $username " "$redis_acl_file"; then
+    local existing_entry
+    existing_entry="$(grep "^user $username " "$redis_acl_file" | tail -n 1)"
+
+    if printf '%s\n' "$existing_entry" | grep -F -q -- ">$password" || \
+       { [ -n "$password_hash" ] && printf '%s\n' "$existing_entry" | grep -F -q -- "#$password_hash"; }; then
+      echo "Password from Secret already exists for user $username, preserving existing entry"
+      if [ -n "$permissions" ]; then
+        local entry_prefix
+        entry_prefix=$(printf '%s\n' "$existing_entry" | awk '{
+          last = 0;
+          for (i = 1; i <= NF; i++) {
+            if ($i ~ /^[>#]/) {
+              last = i;
+            }
+          }
+          if (last == 0) {
+            print $0;
+          } else {
+            for (i = 1; i <= last; i++) {
+              printf "%s%s", $i, (i < last ? " " : "");
+            }
+          }
+        }')
+        if [ -n "$entry_prefix" ]; then
+          if replace_user_entry_in_acl "$username" "$entry_prefix $permissions"; then
+            echo "Updated permissions for existing user $username from Secret"
+          else
+            return 1
+          fi
+        fi
+      fi
+    else
+      local entry_prefix
+      entry_prefix=$(printf '%s\n' "$existing_entry" | awk -v username="$username" -v password="$password" '{
+        on_idx = 0;
+        for (i = 1; i <= NF; i++) {
+          if ($i == "on" || $i == "off") {
+            on_idx = i;
+            break;
+          }
+        }
+        if (on_idx == 0) {
+          printf "user %s on >%s", username, password;
+          for (i = 1; i <= NF; i++) {
+            if ($i ~ /^[>#]/) {
+              printf " %s", $i;
+            }
+          }
+          printf "\n";
+          next;
+        }
+        for (i = 1; i <= on_idx; i++) {
+          printf "%s%s", $i, (i < on_idx ? " " : "");
+        }
+        printf " >%s", password;
+        for (i = on_idx + 1; i <= NF; i++) {
+          if ($i ~ /^[>#]/) {
+            printf " %s", $i;
+          }
+        }
+        printf "\n";
+      }')
+      if [ -n "$entry_prefix" ]; then
+        if [ -n "$permissions" ]; then
+          entry_prefix="$entry_prefix $permissions"
+        fi
+        if replace_user_entry_in_acl "$username" "$entry_prefix"; then
+          echo "Added Secret password to existing user $username, preserved other passwords and updated permissions"
+        else
+          return 1
+        fi
+      fi
+    fi
+  else
+    local new_entry="user $username on >$password"
+    if [ -n "$permissions" ]; then
+      new_entry="$new_entry $permissions"
+    fi
+    printf '%s\n' "$new_entry" >> "$redis_acl_file"
+    echo "Created new user $username with password from Secret"
+  fi
+}
+
 extract_ordinal_from_object_name() {
   local object_name="$1"
   local ordinal="${object_name##*-}"
@@ -42,14 +170,14 @@ build_redis_default_accounts() {
   if [ -n "$REDIS_REPL_PASSWORD" ]; then
     echo "masteruser $REDIS_REPL_USER" >> /etc/redis/redis.conf
     echo "masterauth $REDIS_REPL_PASSWORD" >> /etc/redis/redis.conf
-    echo "user $REDIS_REPL_USER on +psync +replconf +ping >$REDIS_REPL_PASSWORD" >> /data/users.acl
+    ensure_password_in_user "$REDIS_REPL_USER" "$REDIS_REPL_PASSWORD" "+psync +replconf +ping"
   fi
   if [ -n "$REDIS_SENTINEL_PASSWORD" ]; then
-    echo "user $REDIS_SENTINEL_USER on allchannels +multi +slaveof +ping +exec +subscribe +config|rewrite +role +publish +info +client|setname +client|kill +script|kill >$REDIS_SENTINEL_PASSWORD" >> /data/users.acl
+    ensure_password_in_user "$REDIS_SENTINEL_USER" "$REDIS_SENTINEL_PASSWORD" "allchannels +multi +slaveof +ping +exec +subscribe +config|rewrite +role +publish +info +client|setname +client|kill +script|kill"
   fi
   if [ -n "$REDIS_DEFAULT_PASSWORD" ]; then
     echo "protected-mode yes" >> /etc/redis/redis.conf
-    echo "user default on >$REDIS_DEFAULT_PASSWORD ~* &* +@all " >> /data/users.acl
+    ensure_password_in_user "default" "$REDIS_DEFAULT_PASSWORD" "~* &* +@all"
   else
     echo "protected-mode no" >> /etc/redis/redis.conf
   fi
@@ -96,12 +224,11 @@ build_replicaof_config() {
 }
 
 rebuild_redis_acl_file() {
-  if [ -f /data/users.acl ]; then
-    sed -i "/user default on/d" /data/users.acl
-    sed -i "/user $REDIS_REPL_USER on/d" /data/users.acl
-    sed -i "/user $REDIS_SENTINEL_USER on/d" /data/users.acl
+  if [ -f "$redis_acl_file" ]; then
+    echo "rebuild_redis_acl_file: preserving existing acl file with user passwords"
   else
-    touch /data/users.acl
+    touch "$redis_acl_file"
+    echo "rebuild_redis_acl_file: created new acl file"
   fi
 }
 
