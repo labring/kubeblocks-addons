@@ -137,16 +137,39 @@ migrate_legacy_binlog_path() {
         local base="${entry##*/}"
         local src="$data_root/data/$base"
         local dst="$new_dir/$base"
-        if [ ! -s "$src" ]; then
-            echo "missing source binlog: $src" >&2
+        if [ ! -s "$src" ] && [ ! -s "$dst" ]; then
+            echo "missing binlog in both legacy and target paths: $src, $dst" >&2
             rm -f "$tmp_index"
             return 1
+        fi
+    done < "$old_index"
+
+    while IFS= read -r entry || [ -n "$entry" ]; do
+        [ -n "$entry" ] || continue
+        local base="${entry##*/}"
+        local src="$data_root/data/$base"
+        local dst="$new_dir/$base"
+        if [ ! -e "$src" ]; then
+            continue
         fi
         if [ -e "$dst" ] && ! cmp -s "$src" "$dst"; then
             mv "$dst" "$backup/$base.existing"
         fi
-        [ -e "$dst" ] || cp -a "$src" "$dst"
+        if [ -e "$dst" ]; then
+            mv "$src" "$backup/$base.legacy-duplicate"
+        else
+            mv "$src" "$dst"
+        fi
     done < "$old_index"
+
+    while IFS= read -r path || [ -n "$path" ]; do
+        [ -n "$path" ] || continue
+        if [ ! -s "$path" ]; then
+            echo "missing migrated binlog: $path" >&2
+            rm -f "$tmp_index"
+            return 1
+        fi
+    done < "$tmp_index"
 
     mv "$tmp_index" "$new_index"
     chown -R mysql:mysql "$new_dir" 2>/dev/null || true
