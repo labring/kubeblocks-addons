@@ -284,7 +284,6 @@ immutableParameters:
   - tmpdir
   - version_compile_machine
   - lower_case_file_system
-  - lower_case_table_names
 staticParameters:
   - default_time_zone
   - back_log
