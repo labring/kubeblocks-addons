@@ -560,6 +560,7 @@ parse_redis_announce_addr() {
 
 # build redis.conf
 build_redis_conf() {
+  > /etc/redis/redis.conf
   load_redis_template_conf
   build_announce_ip_and_port
   build_redis_service_port
