@@ -579,7 +579,6 @@ immutableParameters:
   - log_bin_index
   - log_slave_updates
   - lower_case_file_system
-  - lower_case_table_names
   - mecab_rc_file
   - open_files_limit
   - persisted_globals_load
