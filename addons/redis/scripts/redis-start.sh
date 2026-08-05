@@ -388,8 +388,8 @@ retry_get_master_addr_by_name_from_sentinel() {
 
   while [ $retry_count -lt $max_retry ]; do
     set +x
-    echo "execute command: timeout $timeout_value redis-cli -h $sentinel_pod_fqdn -p $SENTINEL_SERVICE_PORT -a ******** sentinel get-master-addr-by-name $KB_CLUSTER_COMP_NAME"
-    if output=$(timeout "$timeout_value" redis-cli -h "$sentinel_pod_fqdn" -p "$SENTINEL_SERVICE_PORT" -a "$SENTINEL_PASSWORD" sentinel get-master-addr-by-name "$KB_CLUSTER_COMP_NAME"); then
+    echo "execute command: timeout $timeout_value redis-cli -h $sentinel_pod_fqdn -p $SENTINEL_SERVICE_PORT -a ******** sentinel get-master-addr-by-name ${CUSTOM_SENTINEL_MASTER_NAME:-$KB_CLUSTER_COMP_NAME}"
+    if output=$(timeout "$timeout_value" redis-cli -h "$sentinel_pod_fqdn" -p "$SENTINEL_SERVICE_PORT" -a "$SENTINEL_PASSWORD" sentinel get-master-addr-by-name "${CUSTOM_SENTINEL_MASTER_NAME:-$KB_CLUSTER_COMP_NAME}"); then
       exit_code=0
     else
       exit_code=$?
