@@ -161,6 +161,13 @@ get_minimum_initialize_pod_ordinal() {
   done
 }
 
+redis_data_initialized() {
+  [ -f /data/users.acl ] || \
+  [ -f /data/dump.rdb ] || \
+  [ -f /data/appendonly.aof ] || \
+  [ -d /data/appendonlydir ]
+}
+
 load_redis_template_conf() {
   echo "include /etc/conf/redis.conf" >> /etc/redis/redis.conf
 }
@@ -278,7 +285,7 @@ init_or_get_primary_node() {
   init_or_get_primary_from_redis_sentinel
 
   # check the primary node role in kernel
-  # check_pod_is_primary_in_kernel
+  check_pod_is_primary_in_kernel
 }
 
 init_or_get_primary_from_redis_sentinel() {
@@ -311,6 +318,8 @@ init_or_get_primary_from_redis_sentinel() {
   declare -A master_count_map
   local first_redis_primary_host=""
   local first_redis_primary_port=""
+  local sentinel_count=${#sentinel_pod_list[@]}
+  local quorum=$((sentinel_count / 2 + 1))
   for sentinel_pod in "${sentinel_pod_list[@]}"; do
     sentinel_pod_fqdn="$sentinel_pod.$SENTINEL_HEADLESS_SERVICE_NAME"
 
@@ -344,7 +353,11 @@ init_or_get_primary_from_redis_sentinel() {
   # if there is no primary node found, use the default primary node
   echo "get all primary info from redis sentinel master_count_map: ${master_count_map[*]}"
   if [ ${#master_count_map[@]} -eq 0 ]; then
-    echo "no primary node found from all redis sentinels, use default primary node."
+    if redis_data_initialized; then
+      echo "Error: no primary node found from all redis sentinels and redis data already exists. Refuse to fallback to default primary node."
+      exit 1
+    fi
+    echo "no primary node found from all redis sentinels and redis data is not initialized, use default primary node."
     get_default_initialize_primary_node
     return
   fi
@@ -358,6 +371,12 @@ init_or_get_primary_from_redis_sentinel() {
       primary_port=$(echo $host_port | cut -d: -f2)
     fi
   done
+
+  if (( max_count < quorum )); then
+    echo "Error: no sentinel quorum for primary node. required quorum:$quorum, max votes:$max_count, sentinel count:$sentinel_count."
+    exit 1
+  fi
+  echo "selected primary node from sentinel quorum: $primary:$primary_port, votes:$max_count/$sentinel_count"
 }
 
 retry_get_master_addr_by_name_from_sentinel() {
@@ -369,10 +388,13 @@ retry_get_master_addr_by_name_from_sentinel() {
 
   while [ $retry_count -lt $max_retry ]; do
     set +x
-    echo "execute command: timeout $timeout_value redis-cli -h $sentinel_pod_fqdn -p $SENTINEL_SERVICE_PORT -a ******** sentinel get-master-addr-by-name $KB_CLUSTER_COMP_NAME"
-    output=$(timeout "$timeout_value" redis-cli -h "$sentinel_pod_fqdn" -p "$SENTINEL_SERVICE_PORT" -a "$SENTINEL_PASSWORD" sentinel get-master-addr-by-name "$KB_CLUSTER_COMP_NAME")
+    echo "execute command: timeout $timeout_value redis-cli -h $sentinel_pod_fqdn -p $SENTINEL_SERVICE_PORT -a ******** sentinel get-master-addr-by-name ${CUSTOM_SENTINEL_MASTER_NAME:-$KB_CLUSTER_COMP_NAME}"
+    if output=$(timeout "$timeout_value" redis-cli -h "$sentinel_pod_fqdn" -p "$SENTINEL_SERVICE_PORT" -a "$SENTINEL_PASSWORD" sentinel get-master-addr-by-name "${CUSTOM_SENTINEL_MASTER_NAME:-$KB_CLUSTER_COMP_NAME}"); then
+      exit_code=0
+    else
+      exit_code=$?
+    fi
     set -x
-    exit_code=$?
 
     if [ $exit_code -eq 0 ]; then
       old_ifs="$IFS"
@@ -439,17 +461,40 @@ check_pod_is_primary_in_kernel() {
     return
   fi
 
+  get_primary_role_in_kernel() {
+    local output
+    local status
+
+    set +x
+    if [ -n "$REDIS_DEFAULT_PASSWORD" ]; then
+      if output=$(timeout 5 redis-cli -h "$primary" -p "$primary_port" -a "$REDIS_DEFAULT_PASSWORD" INFO replication 2>&1); then
+        status=0
+      else
+        status=$?
+      fi
+    else
+      if output=$(timeout 5 redis-cli -h "$primary" -p "$primary_port" INFO replication 2>&1); then
+        status=0
+      else
+        status=$?
+      fi
+    fi
+    set -x
+
+    if [ "$status" -ne 0 ]; then
+      echo "failed to check primary role in kernel, primary node: $primary, status: $status, output: $output" >&2
+      return 1
+    fi
+
+    echo "$output" | awk -F: '/^role:/ {print $2}' | tr -d '\r'
+  }
+
   # check the primary is real master role or not
-  set +x
-  if [ -n "$REDIS_DEFAULT_PASSWORD" ]; then
-    check_kernel_role_cmd="redis-cli -h $primary -p $primary_port -a $REDIS_DEFAULT_PASSWORD info replication | grep 'role:' | awk -F: '{print \$2}'"
-  else
-    check_kernel_role_cmd="redis-cli -h $primary -p $primary_port info replication | grep 'role:' | awk -F: '{print \$2}'"
-  fi
   retry_times=10
   while true; do
-    check_role=$(eval "$check_kernel_role_cmd")
-    if [[ "$check_role" =~ "master" ]]; then
+    check_role=$(get_primary_role_in_kernel || true)
+    if [ "$check_role" = "master" ]; then
+      echo "the selected primary node is real master in kernel, primary node: $primary, role: $check_role"
       break
     else
       echo "the selected primary node is not the real master in kernel, existing primary node: $primary, role: $check_role"
@@ -457,11 +502,10 @@ check_pod_is_primary_in_kernel() {
     sleep 3
     retry_times=$((retry_times - 1))
     if [ $retry_times -eq 0 ]; then
-      echo "check primary node role failed after 20 times, existing primary node: $primary, role: $check_role"
+      echo "check primary node role failed after 10 times, existing primary node: $primary, role: $check_role"
       exit 1
     fi
   done
-  set -x
 }
 
 start_redis_server() {
@@ -519,6 +563,7 @@ parse_redis_announce_addr() {
 
 # build redis.conf
 build_redis_conf() {
+  > /etc/redis/redis.conf
   load_redis_template_conf
   build_announce_ip_and_port
   build_redis_service_port
