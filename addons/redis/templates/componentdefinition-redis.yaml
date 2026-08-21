@@ -55,6 +55,8 @@ spec:
       constraintRef: redis7-config-constraints
       namespace: {{ .Release.Namespace }}
       volumeName: redis-config
+      reRenderResourceTypes:
+        - resources
     - name: redis-metrics-config
       templateRef: redis-metrics-config
       namespace: {{ .Release.Namespace }}

@@ -46,6 +46,8 @@ spec:
       constraintRef: redis7-config-constraints
       namespace: {{ .Release.Namespace }}
       volumeName: redis-config
+      reRenderResourceTypes:
+        - resources
   scripts:
     - name: redis-scripts
       templateRef: redis-scripts
