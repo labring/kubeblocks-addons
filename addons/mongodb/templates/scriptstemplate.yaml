@@ -122,13 +122,31 @@ data:
     get_current_member_host() {
       $CLIENT --quiet --eval "rs.isMaster().me" "$URI" --username "$USERNAME" --password "$PASSWORD" 2>/dev/null
     }
+    # The replica set name must match the running config, otherwise the seed
+    # list URI below never resolves a primary. Fall back to the addon default
+    # only when the old primary is unreachable, which is the one case where no
+    # better source exists.
+    get_replica_set_name() {
+      name=$($CLIENT --quiet --eval "rs.conf()._id" "$URI" --username "$USERNAME" --password "$PASSWORD" 2>/dev/null) || true
+      printf '%s' "$name" | tr -d '[:space:]'
+    }
     get_primary() {
       $CLIENT --quiet --eval "var primary=rs.status().members.filter(function(member) { return member.stateStr === 'PRIMARY'; });if (primary.length === 1) { print(primary[0].name); }" "$REPLICA_SET_URI" --username "$USERNAME" --password "$PASSWORD" 2>/dev/null
     }
+    # Normalises a replica set member address so that a short pod name and a
+    # fully qualified name with a port compare equal. Stripping the port must
+    # stay IPv6-aware: a bare IPv6 address carries no port, and treating its
+    # first group as the host would report two distinct members as the same.
     member_host_key() {
-      host=${1%%:*}
+      host=$1
+      case "$host" in
+        \[*\]*) host=${host#\[}; host=${host%%\]*} ;;
+        *:*:*) ;;
+        *) host=${host%%:*} ;;
+      esac
       host=$(printf '%s' "$host" | tr 'A-Z' 'a-z')
       case "$host" in
+        *:*) printf '%s' "$host" ;;
         *[a-z]*) printf '%s' "${host%%.*}" ;;
         *) printf '%s' "$host" ;;
       esac
@@ -158,12 +176,16 @@ data:
     switchover() {
       local member_hosts=$(get_member_hosts)
       if [ -z "$member_hosts" ]; then
-          echo "Failed to discover replica set members from the old primary or pod list, exit"
-          exit 1
+          echo "Failed to discover replica set members from the old primary or pod list"
+          return 1
       fi
       local old_primary_host=$(get_current_member_host)
       if [ -z "$old_primary_host" ] && [ -n "$KB_CONSENSUS_LEADER_POD_FQDN" ]; then
         old_primary_host="$KB_CONSENSUS_LEADER_POD_FQDN.$KB_NAMESPACE.svc.cluster.local:27017"
+      fi
+      local discovered_rs_name=$(get_replica_set_name)
+      if [ -n "$discovered_rs_name" ]; then
+        REPLICA_SET_NAME="$discovered_rs_name"
       fi
       REPLICA_SET_URI="mongodb://$member_hosts/admin?replicaSet=$REPLICA_SET_NAME&serverSelectionTimeoutMS=5000&connectTimeoutMS=5000&socketTimeoutMS=5000"
       echo "Checking current role..."
