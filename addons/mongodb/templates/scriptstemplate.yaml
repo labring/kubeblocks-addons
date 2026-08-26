@@ -88,7 +88,10 @@ data:
     USERNAME=$MONGODB_ROOT_USER
     PASSWORD=$MONGODB_ROOT_PASSWORD
     CLIENT=`which mongosh>/dev/null&&echo mongosh||echo mongo`
-    REPLICA_SET_NAME="replicaset"
+    # replicaset-setup.sh names the replica set after the pod name without its
+    # ordinal, which is exactly KB_CLUSTER_COMP_NAME. The value in the config
+    # template is overridden at startup and must not be trusted here.
+    REPLICA_SET_NAME="${KB_CLUSTER_COMP_NAME:-replicaset}"
     REPLICA_SET_URI=""
     . /scripts/switchover-check-role.sh
     get_bootstrap_member_hosts() {
@@ -122,10 +125,10 @@ data:
     get_current_member_host() {
       $CLIENT --quiet --eval "rs.isMaster().me" "$URI" --username "$USERNAME" --password "$PASSWORD" 2>/dev/null
     }
-    # The replica set name must match the running config, otherwise the seed
-    # list URI below never resolves a primary. Fall back to the addon default
-    # only when the old primary is unreachable, which is the one case where no
-    # better source exists.
+    # The replica set name must match the running one, otherwise the seed list
+    # URI never resolves a primary. Ask the old primary when it is still
+    # reachable; the caller keeps the name derived from the pod prefix when it
+    # is not.
     get_replica_set_name() {
       name=$($CLIENT --quiet --eval "rs.conf()._id" "$URI" --username "$USERNAME" --password "$PASSWORD" 2>/dev/null) || true
       printf '%s' "$name" | tr -d '[:space:]'
