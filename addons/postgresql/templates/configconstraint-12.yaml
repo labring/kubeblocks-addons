@@ -13,6 +13,7 @@ spec:
       namespace: {{ .Release.Namespace }}
 
   dynamicActionCanBeMerged: false
+  dynamicParameterSelectedPolicy: all
 
   # update patroni master
   selector:
