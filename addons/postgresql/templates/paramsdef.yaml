@@ -18,6 +18,7 @@ spec:
     format: properties
 
   mergeReloadAndRestart: false
+  reloadStaticParamsBeforeRestart: true
 
   # ConfigurationSchema that impose restrictions on engine parameter's rule
   parametersSchema:
