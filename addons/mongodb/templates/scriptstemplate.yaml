@@ -18,11 +18,18 @@ data:
     #!/bin/sh
     check_role() {
       CLIENT=`which mongosh>/dev/null&&echo mongosh||echo mongo`
-      local role=$($CLIENT --quiet --eval "rs.isMaster().ismaster" "$1" --username "$USERNAME" --password "$PASSWORD")
+      local role
+      role=$($CLIENT --quiet --eval "rs.isMaster().ismaster" "$1" --username "$USERNAME" --password "$PASSWORD" 2>/dev/null)
+      if [ $? -ne 0 ]; then
+        echo "Unknown"
+        return
+      fi
       if [ "${role}" = "true" ]; then
         echo "Primary"
-      else
+      elif [ "${role}" = "false" ]; then
         echo "Secondary"
+      else
+        echo "Unknown"
       fi
     }
   switchover-verify.sh: |-
@@ -38,7 +45,7 @@ data:
           count=$((count+1))
           if [ ${count} -ge 10 ]; then
             echo "Failed to switch over to primary after 10 attempts"
-            break
+            return 1
           else
             echo "Attempt $count: $candidate_role_after_switchover"
             sleep 3
@@ -48,8 +55,8 @@ data:
     }
   switchover-with-candidate.sh: |-
     #!/bin/sh
-    URI="mongodb://$KB_CONSENSUS_LEADER_POD_FQDN:27017"
-    CANDIDATE_URI="mongodb://$KB_SWITCHOVER_CANDIDATE_FQDN:27017"
+    URI="mongodb://$KB_CONSENSUS_LEADER_POD_FQDN:27017/admin?serverSelectionTimeoutMS=5000&connectTimeoutMS=5000&socketTimeoutMS=5000"
+    CANDIDATE_URI="mongodb://$KB_SWITCHOVER_CANDIDATE_FQDN:27017/admin?serverSelectionTimeoutMS=5000&connectTimeoutMS=5000&socketTimeoutMS=5000"
     USERNAME=$MONGODB_ROOT_USER
     PASSWORD=$MONGODB_ROOT_PASSWORD
     CLIENT=`which mongosh>/dev/null&&echo mongosh||echo mongo`
@@ -59,9 +66,9 @@ data:
     switchover() {
       echo "Checking current role..."
       local current_leader_role=$(check_role "$URI")
-      if [ "${current_leader_role}" = "Secondary" ]; then
-          echo "Current instance role is not the primary, can not do switchover"
-          exit 1
+      if [ "${current_leader_role}" != "Primary" ]; then
+          echo "Current instance role is not confirmed as primary, can not do switchover"
+          return 1
       fi
       echo "Switchover to new primary: $CANDIDATE_HOST"
       $CLIENT --quiet --eval "conf=rs.config();conf.members.forEach(member => member.priority = 1);const candidateHost = '$CANDIDATE_HOST';const member = conf.members.find(member => member.host === candidateHost);if (member) {member.priority = 2;};rs.reconfig(conf)" "$URI" --username "$USERNAME" --password "$PASSWORD"
@@ -69,37 +76,141 @@ data:
       verify
     }
 
-    switchover
+    if ! switchover; then
+      echo "Switchover failed"
+      exit 1
+    fi
     echo "Switchover complete"
   switchover-without-candidate.sh: |-
     #!/bin/sh
 
-    URI="mongodb://$KB_CONSENSUS_LEADER_POD_FQDN:27017"
+    URI="mongodb://$KB_CONSENSUS_LEADER_POD_FQDN:27017/admin?serverSelectionTimeoutMS=5000&connectTimeoutMS=5000&socketTimeoutMS=5000"
     USERNAME=$MONGODB_ROOT_USER
     PASSWORD=$MONGODB_ROOT_PASSWORD
     CLIENT=`which mongosh>/dev/null&&echo mongosh||echo mongo`
-    OLD_LEADER_HOST="$KB_CONSENSUS_LEADER_POD_FQDN.$KB_NAMESPACE.svc.cluster.local:27017"
+    # replicaset-setup.sh names the replica set after the pod name without its
+    # ordinal, which is exactly KB_CLUSTER_COMP_NAME. The value in the config
+    # template is overridden at startup and must not be trusted here.
+    REPLICA_SET_NAME="${KB_CLUSTER_COMP_NAME:-replicaset}"
+    REPLICA_SET_URI=""
     . /scripts/switchover-check-role.sh
-    . /scripts/switchover-verify.sh
+    get_bootstrap_member_hosts() {
+      if [ -z "$KB_POD_LIST" ] || [ -z "$KB_CLUSTER_COMP_NAME" ] || [ -z "$KB_NAMESPACE" ]; then
+        return 1
+      fi
+      member_hosts=""
+      old_ifs=$IFS
+      IFS=,
+      for pod_name in $KB_POD_LIST; do
+        [ -z "$pod_name" ] && continue
+        host="$pod_name.$KB_CLUSTER_COMP_NAME-headless.$KB_NAMESPACE.svc.cluster.local:27017"
+        if [ -n "$member_hosts" ]; then
+          member_hosts="$member_hosts,$host"
+        else
+          member_hosts="$host"
+        fi
+      done
+      IFS=$old_ifs
+      [ -n "$member_hosts" ] || return 1
+      printf '%s\n' "$member_hosts"
+    }
+    get_member_hosts() {
+      member_hosts=$($CLIENT --quiet --eval "rs.conf().members.map(function(member) { return member.host; }).join(',')" "$URI" --username "$USERNAME" --password "$PASSWORD" 2>/dev/null) || true
+      if [ -n "$member_hosts" ]; then
+        printf '%s\n' "$member_hosts"
+        return 0
+      fi
+      get_bootstrap_member_hosts
+    }
+    get_current_member_host() {
+      $CLIENT --quiet --eval "rs.isMaster().me" "$URI" --username "$USERNAME" --password "$PASSWORD" 2>/dev/null
+    }
+    # The replica set name must match the running one, otherwise the seed list
+    # URI never resolves a primary. Ask the old primary when it is still
+    # reachable; the caller keeps the name derived from the pod prefix when it
+    # is not.
+    get_replica_set_name() {
+      name=$($CLIENT --quiet --eval "rs.conf()._id" "$URI" --username "$USERNAME" --password "$PASSWORD" 2>/dev/null) || true
+      printf '%s' "$name" | tr -d '[:space:]'
+    }
+    get_primary() {
+      $CLIENT --quiet --eval "var primary=rs.status().members.filter(function(member) { return member.stateStr === 'PRIMARY'; });if (primary.length === 1) { print(primary[0].name); }" "$REPLICA_SET_URI" --username "$USERNAME" --password "$PASSWORD" 2>/dev/null
+    }
+    # Normalises a replica set member address so that a short pod name and a
+    # fully qualified name with a port compare equal. Stripping the port must
+    # stay IPv6-aware: a bare IPv6 address carries no port, and treating its
+    # first group as the host would report two distinct members as the same.
+    member_host_key() {
+      host=$1
+      case "$host" in
+        \[*\]*) host=${host#\[}; host=${host%%\]*} ;;
+        *:*:*) ;;
+        *) host=${host%%:*} ;;
+      esac
+      host=$(printf '%s' "$host" | tr 'A-Z' 'a-z')
+      case "$host" in
+        *:*) printf '%s' "$host" ;;
+        *[a-z]*) printf '%s' "${host%%.*}" ;;
+        *) printf '%s' "$host" ;;
+      esac
+    }
+    is_same_member_host() {
+      [ -n "$1" ] && [ -n "$2" ] || return 1
+      [ "$(member_host_key "$1")" = "$(member_host_key "$2")" ]
+    }
+    wait_for_new_primary() {
+      old_primary_host=$1
+      count=0
+      while [ ${count} -lt 30 ]; do
+        primary_host=$(get_primary)
+        if [ -n "$primary_host" ]; then
+          if [ -z "$old_primary_host" ] || ! is_same_member_host "$primary_host" "$old_primary_host"; then
+            echo "Switchover successfully completed by $primary_host"
+            return 0
+          fi
+        fi
+        count=$((count+1))
+        echo "Attempt $count: waiting for a new primary"
+        sleep 2
+      done
+      echo "Failed to elect a new primary after 30 attempts"
+      return 1
+    }
     switchover() {
+      local member_hosts=$(get_member_hosts)
+      if [ -z "$member_hosts" ]; then
+          echo "Failed to discover replica set members from the old primary or pod list"
+          return 1
+      fi
+      local old_primary_host=$(get_current_member_host)
+      if [ -z "$old_primary_host" ] && [ -n "$KB_CONSENSUS_LEADER_POD_FQDN" ]; then
+        old_primary_host="$KB_CONSENSUS_LEADER_POD_FQDN.$KB_NAMESPACE.svc.cluster.local:27017"
+      fi
+      local discovered_rs_name=$(get_replica_set_name)
+      if [ -n "$discovered_rs_name" ]; then
+        REPLICA_SET_NAME="$discovered_rs_name"
+      fi
+      REPLICA_SET_URI="mongodb://$member_hosts/admin?replicaSet=$REPLICA_SET_NAME&serverSelectionTimeoutMS=5000&connectTimeoutMS=5000&socketTimeoutMS=5000"
       echo "Checking current role..."
       local current_leader_role=$(check_role "$URI")
       if [ "${current_leader_role}" = "Secondary" ]; then
-          echo "Current instance role is not the primary, can not do switchover"
-          exit 1
+          echo "Current instance is no longer primary, waiting for the already-started switchover"
+          wait_for_new_primary "$old_primary_host"
+          return $?
       fi
-      echo "Switchover without candidate, try to select a new primary randomly ..."
-      local CANDIDATE_HOST=$($CLIENT --quiet --eval "conf=rs.config();const candidateHost = '$OLD_LEADER_HOST';const member=conf.members.find(member => member.host !== candidateHost);if (member) {print(member.host)}" "$URI" --username "$USERNAME" --password "$PASSWORD")
-      local CANDIDATE_URI="mongodb://$CANDIDATE_HOST"
-      if [ -z "$CANDIDATE_HOST" ]; then
-          echo "Failed to select a new candidate primary, exit"
-          exit 1
+      if [ "${current_leader_role}" = "Primary" ]; then
+        echo "Safely stepping down the current primary ..."
+        if ! $CLIENT --quiet --eval "db.adminCommand({replSetStepDown: 300, secondaryCatchUpPeriodSecs: 10, force: false})" "$URI" --username "$USERNAME" --password "$PASSWORD"; then
+            echo "Primary stepdown command ended before returning a result; verifying replica set state"
+        fi
+      else
+        echo "Current primary is unreachable or role is unknown; waiting for MongoDB majority election"
       fi
-      echo "Switchover to new primary: $CANDIDATE_HOST"
-      $CLIENT --quiet --eval "conf=rs.config();conf.members.forEach(member => member.priority = 1);const candidateHost = '$CANDIDATE_HOST';const member = conf.members.find(member => member.host === candidateHost);if (member) {member.priority = 2;};rs.reconfig(conf)" "$URI" --username "$USERNAME" --password "$PASSWORD"
-      echo "Checking candidate instance role after switchover..."
-      verify
+      wait_for_new_primary "$old_primary_host"
     }
 
-    switchover
+    if ! switchover; then
+      echo "Switchover without candidate failed"
+      exit 1
+    fi
     echo "Switchover without candidate complete"
