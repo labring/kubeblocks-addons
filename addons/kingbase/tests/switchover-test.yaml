@@ -1,0 +1,11 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: kingbase-test-switchover-b15
+  namespace: kingbase-test
+spec:
+  clusterRef: kingbase-ha-test
+  type: Switchover
+  switchover:
+    - componentName: kingbase
+      instanceName: kingbase-ha-test-kingbase-1

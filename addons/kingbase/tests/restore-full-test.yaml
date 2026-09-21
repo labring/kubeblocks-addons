@@ -1,0 +1,13 @@
+# KB 0.8 native Restore OpsRequest. It creates a new Cluster from a completed
+# Backup; apply only in an isolated namespace with spare nodes/PVCs.
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: kingbase-restore-b20-r4
+  namespace: kingbase-test
+spec:
+  clusterRef: kingbase-ha-restore-b20-r4
+  type: Restore
+  restoreSpec:
+    backupName: kingbase-test-backup-ops-b20-r2-data
+    volumeRestorePolicy: Parallel

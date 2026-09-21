@@ -1,0 +1,22 @@
+# Temporary KB 0.8 external exposure test. This is intentionally NodePort,
+# primary-only, and must be disabled after validation.
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: kingbase-expose-nodeport-test
+  namespace: kingbase-test
+spec:
+  clusterRef: kingbase-ha-test
+  type: Expose
+  expose:
+    - componentName: kingbase
+      switch: Enable
+      services:
+        - name: rw-external-test
+          roleSelector: primary
+          serviceType: NodePort
+          ports:
+            - name: kingbase
+              port: 54321
+              targetPort: 54321
+              protocol: TCP

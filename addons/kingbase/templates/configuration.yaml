@@ -1,0 +1,14 @@
+{{- if .Values.configuration.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.configuration.templateName }}
+  namespace: {{ include "kingbase.configurationNamespace" . | quote }}
+  labels:
+    {{- include "kingbase.labels" . | nindent 4 }}
+data:
+  kingbase-user.conf: |
+    # Only reloadable workload settings belong here. HA, WAL, TLS and
+    # connection settings remain fixed in docker-entrypoint.sh.
+    log_min_duration_statement = {{ .Values.configuration.logMinDurationStatement }}
+{{- end }}

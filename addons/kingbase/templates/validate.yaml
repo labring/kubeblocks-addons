@@ -1,0 +1,30 @@
+{{- if ge (int .Values.ha.fenceTimeoutSeconds) (int .Values.ha.leaseDurationSeconds) -}}
+{{- fail "ha.fenceTimeoutSeconds must be shorter than ha.leaseDurationSeconds" -}}
+{{- end -}}
+{{- if lt (int .Values.ha.retryPeriodSeconds) 1 -}}
+{{- fail "ha.retryPeriodSeconds must be at least 1" -}}
+{{- end -}}
+{{- if lt (int .Values.ha.switchoverCatchupTimeoutSeconds) 1 -}}
+{{- fail "ha.switchoverCatchupTimeoutSeconds must be at least 1" -}}
+{{- end -}}
+{{- if empty .Values.ha.apiTokenSecretName -}}
+{{- fail "ha.apiTokenSecretName is required" -}}
+{{- end -}}
+{{- if empty .Values.license.secretName -}}
+{{- fail "license.secretName is required" -}}
+{{- end -}}
+{{- if and .Values.image.digest (not (regexMatch "^sha256:[a-f0-9]{64}$" .Values.image.digest)) -}}
+{{- fail "image.digest must be empty or a sha256 digest" -}}
+{{- end -}}
+{{- if and .Values.tls.enabled (empty .Values.tls.secretName) -}}
+{{- fail "tls.secretName is required when tls.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.cluster.create (or (lt (int .Values.cluster.replicas) 3) (gt (int .Values.cluster.replicas) 9)) -}}
+{{- fail "cluster.replicas must be between 3 and 9" -}}
+{{- end -}}
+{{- if and .Values.cluster.create .Values.cluster.pdb.enabled (lt (int .Values.cluster.pdb.minAvailable) (add (div (int .Values.cluster.replicas) 2) 1)) -}}
+{{- fail "cluster.pdb.minAvailable must preserve a majority of replicas" -}}
+{{- end -}}
+{{- if and .Values.cluster.create (empty .Values.cluster.storageClassName) -}}
+{{- fail "cluster.storageClassName is required when cluster.create=true" -}}
+{{- end -}}

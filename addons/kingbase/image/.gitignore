@@ -1,0 +1,9 @@
+KingbaseES*.iso
+KingbaseES*.tar
+silent.cfg
+license*.dat
+*.pem
+*.p12
+*.pfx
+*.key
+*.crt

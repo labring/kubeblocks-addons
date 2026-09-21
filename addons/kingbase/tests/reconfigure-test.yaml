@@ -1,0 +1,20 @@
+# KB 0.8 Reconfiguring example for a Cluster created with spec.configs.
+# The current long-lived test Cluster predates that immutable field, so this is
+# a server-side/API fixture only until a spare restore Cluster is available.
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: kingbase-reconfigure-log-duration
+  namespace: kingbase-test
+spec:
+  clusterRef: kingbase-ha-test
+  type: Reconfiguring
+  reconfigures:
+    - componentName: kingbase
+      configurations:
+        - name: kingbase-test-user-configuration
+          keys:
+            - key: kingbase-user.conf
+              parameters:
+                - key: log_min_duration_statement
+                  value: "2000"

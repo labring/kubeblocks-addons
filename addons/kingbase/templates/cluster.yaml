@@ -1,0 +1,49 @@
+{{- if .Values.cluster.create }}
+{{- if .Values.cluster.createNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.cluster.namespace }}
+  labels:
+    app.kubernetes.io/part-of: kingbase
+---
+{{- end }}
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: Cluster
+metadata:
+  name: {{ .Values.cluster.name }}
+  namespace: {{ .Values.cluster.namespace }}
+  labels:
+    {{- include "kingbase.labels" . | nindent 4 }}
+spec:
+  clusterDefinitionRef: {{ .Values.clusterDefinition.name }}
+  affinity:
+    nodeLabels:
+      {{- toYaml .Values.cluster.nodeSelector | nindent 6 }}
+    podAntiAffinity: Required
+    tenancy: SharedNode
+    topologyKeys:
+      - kubernetes.io/hostname
+  terminationPolicy: DoNotTerminate
+  componentSpecs:
+    - name: kingbase
+      componentDef: {{ .Values.componentDefinition.name }}
+      replicas: {{ .Values.cluster.replicas }}
+      serviceAccountName: {{ include "kingbase.serviceAccountName" . }}
+      enabledLogs:
+        - running
+      monitor: {{ .Values.monitoring.enabled }}
+      noCreatePDB: true
+      rsmTransformPolicy: ToSts
+      resources:
+        {{- toYaml .Values.cluster.resources | nindent 8 }}
+      volumeClaimTemplates:
+        - name: data
+          spec:
+            storageClassName: {{ required "cluster.storageClassName is required when cluster.create=true" .Values.cluster.storageClassName | quote }}
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: {{ .Values.cluster.storageSize }}
+{{- end }}

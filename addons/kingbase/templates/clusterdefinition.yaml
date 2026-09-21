@@ -1,0 +1,11 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ClusterDefinition
+metadata:
+  name: {{ .Values.clusterDefinition.name }}
+  labels:
+    {{- include "kingbase.labels" . | nindent 4 }}
+spec:
+  type: kingbase
+  componentDefs:
+    - name: kingbase
+      workloadType: Replication

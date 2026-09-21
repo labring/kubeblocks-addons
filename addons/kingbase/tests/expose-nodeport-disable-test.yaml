@@ -1,0 +1,15 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: kingbase-expose-nodeport-disable-test
+  namespace: kingbase-test
+spec:
+  clusterRef: kingbase-ha-test
+  type: Expose
+  expose:
+    - componentName: kingbase
+      switch: Disable
+      services:
+        - name: rw-external-test
+          roleSelector: primary
+          serviceType: NodePort

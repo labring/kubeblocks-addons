@@ -1,0 +1,8 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: kingbase-test-start-b17
+  namespace: kingbase-test
+spec:
+  clusterRef: kingbase-ha-test
+  type: Start

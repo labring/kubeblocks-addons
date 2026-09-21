@@ -1,0 +1,17 @@
+# Disposable test only. Use a new metadata.name for each OpsRequest execution.
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: kingbase-test-vscale-up-b16
+  namespace: kingbase-test
+spec:
+  clusterRef: kingbase-ha-test
+  type: VerticalScaling
+  verticalScaling:
+    - componentName: kingbase
+      requests:
+        cpu: 300m
+        memory: 1200Mi
+      limits:
+        cpu: 1200m
+        memory: 2300Mi

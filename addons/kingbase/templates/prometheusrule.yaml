@@ -1,0 +1,48 @@
+{{- if and .Values.cluster.create .Values.monitoring.enabled .Values.monitoring.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Values.cluster.name }}-kingbase
+  namespace: {{ .Values.cluster.namespace }}
+  labels:
+    {{- include "kingbase.labels" . | nindent 4 }}
+spec:
+  groups:
+    - name: kingbase-ha
+      rules:
+        - alert: KingbaseInstanceDown
+          expr: min_over_time(kingbase_up{namespace={{ .Values.cluster.namespace | quote }},cluster={{ .Values.cluster.name | quote }}}[2m]) == 0 or absent_over_time(kingbase_up{namespace={{ .Values.cluster.namespace | quote }},cluster={{ .Values.cluster.name | quote }}}[2m])
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KingbaseES instance is unavailable
+        - alert: KingbasePrimaryCountInvalid
+          expr: sum(kingbase_role{namespace={{ .Values.cluster.namespace | quote }},cluster={{ .Values.cluster.name | quote }},role="primary"}) != 1 or absent(kingbase_role{namespace={{ .Values.cluster.namespace | quote }},cluster={{ .Values.cluster.name | quote }},role="primary"})
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: KingbaseES cluster does not have exactly one primary
+        - alert: KingbaseReplicationStandbyMissing
+          expr: max(kingbase_replication_connected_standbys{namespace={{ .Values.cluster.namespace | quote }},cluster={{ .Values.cluster.name | quote }}}) < 1 or absent(kingbase_replication_connected_standbys{namespace={{ .Values.cluster.namespace | quote }},cluster={{ .Values.cluster.name | quote }}})
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KingbaseES primary has no connected standby
+        - alert: KingbaseReplicationLagHigh
+          expr: kingbase_replication_lag_bytes{namespace={{ .Values.cluster.namespace | quote }},cluster={{ .Values.cluster.name | quote }}} > {{ .Values.monitoring.replicationLagWarningBytes }}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: KingbaseES standby replication lag is high
+        - alert: KingbaseReplicationLagCritical
+          expr: kingbase_replication_lag_bytes{namespace={{ .Values.cluster.namespace | quote }},cluster={{ .Values.cluster.name | quote }}} > {{ .Values.monitoring.replicationLagCriticalBytes }}
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KingbaseES standby replication lag is critical
+{{- end }}
