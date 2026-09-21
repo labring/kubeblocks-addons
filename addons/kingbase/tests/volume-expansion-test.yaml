@@ -1,0 +1,15 @@
+# Disposable test only. Use a new metadata.name for each OpsRequest execution.
+# KubeBlocks and Kubernetes do not support shrinking a PVC.
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: kingbase-test-vexpand-b16
+  namespace: kingbase-test
+spec:
+  clusterRef: kingbase-ha-test
+  type: VolumeExpansion
+  volumeExpansion:
+    - componentName: kingbase
+      volumeClaimTemplates:
+        - name: data
+          storage: 640Mi

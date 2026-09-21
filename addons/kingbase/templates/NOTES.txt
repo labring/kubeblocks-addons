@@ -1,0 +1,17 @@
+KingbaseES V9 HA definitions are installed for KubeBlocks 0.8.x.
+
+Before creating a cluster, prepare these Secrets in the target namespace:
+  - {{ .Values.license.secretName }} with key license.dat
+  - {{ .Values.tls.secretName }} with keys tls.crt, tls.key, and ca.crt
+  - {{ .Values.ha.apiTokenSecretName }} with key token
+
+{{- if .Values.cluster.create }}
+Cluster {{ .Values.cluster.namespace }}/{{ .Values.cluster.name }} was rendered with
+three or more replicas, hard pod anti-affinity, and DoNotTerminate protection.
+
+Check its status with:
+  kubectl -n {{ .Values.cluster.namespace }} get cluster,pod,svc,pvc
+{{- else }}
+No Cluster was created. Copy values-production.yaml, set a production StorageClass,
+and install again with cluster.create=true after completing the readiness checklist.
+{{- end }}

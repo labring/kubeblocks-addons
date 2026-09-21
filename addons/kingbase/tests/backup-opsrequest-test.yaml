@@ -1,0 +1,16 @@
+# KB 0.8 native Backup OpsRequest. The controller creates and tracks the
+# dataprotection Backup CR using the Kingbase ActionSet contract.
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: kingbase-test-backup-ops-b20-r2
+  namespace: kingbase-test
+spec:
+  clusterRef: kingbase-ha-test
+  type: Backup
+  backupSpec:
+    backupName: kingbase-test-backup-ops-b20-r2-data
+    backupPolicyName: kingbase-ha-test-kingbase-backup-policy
+    backupMethod: kingbase-basebackup
+    deletionPolicy: Retain
+    retentionPeriod: 7d

@@ -1,0 +1,394 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: ComponentDefinition
+metadata:
+  name: {{ .Values.componentDefinition.name }}
+  labels:
+    {{- include "kingbase.labels" . | nindent 4 }}
+  {{- if .Values.backup.enabled }}
+  annotations:
+    apps.kubeblocks.io/horizontal-scale-backup-policy-template: {{ .Values.backup.policyTemplateName }}
+  {{- end }}
+spec:
+  provider: sealos
+  description: KingbaseES V9 with synchronous replication and lease-fenced failover
+  serviceKind: kingbase
+  serviceVersion: {{ .Values.componentDefinition.serviceVersion | quote }}
+  roleArbitrator: External
+  replicasLimit:
+    minReplicas: 3
+    maxReplicas: 9
+  updateStrategy: Serial
+  {{- if .Values.configuration.enabled }}
+  configs:
+    - name: kingbase-user-configuration
+      templateRef: {{ .Values.configuration.templateName }}
+      namespace: {{ include "kingbase.configurationNamespace" . | quote }}
+      keys:
+        - kingbase-user.conf
+      volumeName: kingbase-user-config
+  {{- end }}
+  volumes:
+    - name: data
+      needSnapshot: true
+  roles:
+    - name: primary
+      serviceable: true
+      writable: true
+    - name: standby
+      serviceable: true
+      writable: false
+  services:
+    - name: rw
+      spec:
+        ports:
+          - name: kingbase
+            port: 54321
+            targetPort: kingbase
+      roleSelector: primary
+    - name: ro
+      serviceName: ro
+      spec:
+        ports:
+          - name: kingbase
+            port: 54321
+            targetPort: kingbase
+      roleSelector: standby
+  logConfigs:
+    - name: running
+      filePathPattern: /var/lib/kingbase/data/log/*.log
+  {{- if .Values.monitoring.enabled }}
+  monitor:
+    builtIn: false
+    exporterConfig:
+      scrapePath: /metrics
+      scrapePort: metrics
+  {{- end }}
+  systemAccounts:
+    - name: system
+      initAccount: true
+      passwordGenerationPolicy:
+        length: 24
+        numDigits: 8
+        numSymbols: 0
+        letterCase: MixedCases
+    - name: replication
+      statement: ALTER ROLE $(USERNAME) WITH LOGIN REPLICATION PASSWORD '$(PASSWD)';
+      passwordGenerationPolicy:
+        length: 24
+        numDigits: 8
+        numSymbols: 0
+        letterCase: MixedCases
+  vars:
+    - name: KINGBASE_SYSTEM_USER
+      valueFrom:
+        credentialVarRef:
+          name: system
+          optional: false
+          username: Required
+    - name: KINGBASE_SYSTEM_PASSWORD
+      valueFrom:
+        credentialVarRef:
+          name: system
+          optional: false
+          password: Required
+    - name: KINGBASE_REPL_USER
+      valueFrom:
+        credentialVarRef:
+          name: replication
+          optional: false
+          username: Required
+    - name: KINGBASE_REPL_PASSWORD
+      valueFrom:
+        credentialVarRef:
+          name: replication
+          optional: false
+          password: Required
+    - name: KINGBASE_RW_HOST
+      value: $(KB_CLUSTER_NAME)-$(KB_COMP_NAME)
+  lifecycleActions:
+    roleProbe:
+      customHandler:
+        image: {{ include "kingbase.image" . | quote }}
+        container: kingbase
+        exec:
+          command:
+            - /usr/local/bin/kingbase-role-probe.sh
+      initialDelaySeconds: 15
+      periodSeconds: 2
+      timeoutSeconds: 2
+    switchover:
+      withCandidate:
+        image: {{ include "kingbase.image" . | quote }}
+        exec:
+          command:
+            - /usr/local/bin/kingbase-switchover.sh
+          args:
+            - with-candidate
+        env:
+          - name: KINGBASE_HA_API_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.ha.apiTokenSecretName }}
+                key: token
+        timeoutSeconds: 180
+      withoutCandidate:
+        image: {{ include "kingbase.image" . | quote }}
+        exec:
+          command:
+            - /usr/local/bin/kingbase-switchover.sh
+          args:
+            - without-candidate
+        env:
+          - name: KINGBASE_HA_API_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.ha.apiTokenSecretName }}
+                key: token
+        timeoutSeconds: 180
+    accountProvision:
+      customHandler:
+        container: kingbase
+        exec:
+          command:
+            - /bin/bash
+            - -ec
+          args:
+            - |
+              export KINGBASE_PASSWORD
+              printf '%s\n' "$KB_ACCOUNT_STATEMENT" | "$KINGBASE_HOME/bin/ksql" \
+                -h /tmp -p "$KINGBASE_PORT" -U "$KINGBASE_SUPERUSER" \
+                -d "$KINGBASE_DATABASE" -v ON_ERROR_STOP=1
+  runtime:
+    terminationGracePeriodSeconds: 120
+    {{- with .Values.cluster.priorityClassName }}
+    priorityClassName: {{ . | quote }}
+    {{- end }}
+    securityContext:
+      seccompProfile:
+        type: RuntimeDefault
+      fsGroup: 1000
+      fsGroupChangePolicy: OnRootMismatch
+    containers:
+      - name: kingbase
+        image: {{ include "kingbase.image" . | quote }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command:
+          - /usr/local/bin/docker-entrypoint.sh
+        args:
+          - kingbase
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+            add:
+              - CHOWN
+              - DAC_OVERRIDE
+              - FOWNER
+              - SETGID
+              - SETUID
+          runAsUser: 0
+          runAsGroup: 0
+        ports:
+          - name: kingbase
+            containerPort: 54321
+          - name: ha-manager
+            containerPort: 8008
+        env:
+          - name: KINGBASE_HOME
+            value: /home/kingbase/install/kingbase
+          - name: KINGBASE_DATA_DIR
+            value: /var/lib/kingbase/data
+          - name: KINGBASE_PORT
+            value: "54321"
+          - name: KINGBASE_LICENSE_SOURCE_DIR
+            value: /opt/Kingbase/license
+          - name: KINGBASE_LICENSE_REQUIRED
+            value: {{ .Values.license.required | ternary "1" "0" | quote }}
+          - name: KINGBASE_SUPERUSER
+            value: $(KINGBASE_SYSTEM_USER)
+          - name: KINGBASE_PASSWORD
+            value: $(KINGBASE_SYSTEM_PASSWORD)
+          - name: KINGBASE_DATABASE
+            value: kingbase
+          - name: KINGBASE_REPLICATION_USER
+            value: $(KINGBASE_REPL_USER)
+          - name: KINGBASE_REPLICATION_PASSWORD
+            value: $(KINGBASE_REPL_PASSWORD)
+          - name: KINGBASE_INITDB_EXTRA_ARGS
+            value: -m oracle
+          - name: KINGBASE_PRIMARY_HOST
+            value: $(KINGBASE_RW_HOST)
+          - name: KINGBASE_REJOIN_PRIMARY_HOST
+            value: $(KINGBASE_RW_HOST)
+          - name: KINGBASE_HA_PRIMARY_HOST
+            value: $(KINGBASE_RW_HOST)
+          - name: KINGBASE_HA_PRIMARY_HEADLESS_TEMPLATE
+            value: $$(POD_NAME).$(KB_CLUSTER_NAME)-$(KB_COMP_NAME)-headless.$(KB_NAMESPACE).svc.cluster.local
+          - name: KINGBASE_HA_LEASE_NAME
+            value: $(KB_CLUSTER_NAME)-$(KB_COMP_NAME)-primary
+          - name: KINGBASE_HA_POD_LABEL_SELECTOR
+            value: app.kubernetes.io/instance=$(KB_CLUSTER_NAME),apps.kubeblocks.io/component-name=$(KB_COMP_NAME)
+          - name: KINGBASE_HA_FAILOVER_ENABLED
+            value: {{ .Values.ha.automaticFailover | quote }}
+          - name: KINGBASE_HA_LEASE_DURATION_SECONDS
+            value: {{ .Values.ha.leaseDurationSeconds | quote }}
+          - name: KINGBASE_HA_BOOTSTRAP_LEASE_DURATION_SECONDS
+            value: {{ max (mul .Values.ha.leaseDurationSeconds 10) 300 | quote }}
+          - name: KINGBASE_HA_FENCE_TIMEOUT_SECONDS
+            value: {{ .Values.ha.fenceTimeoutSeconds | quote }}
+          - name: KINGBASE_HA_RETRY_PERIOD_SECONDS
+            value: {{ .Values.ha.retryPeriodSeconds | quote }}
+          - name: KINGBASE_HA_SWITCHOVER_CATCHUP_TIMEOUT_SECONDS
+            value: {{ .Values.ha.switchoverCatchupTimeoutSeconds | quote }}
+          - name: KINGBASE_HA_MAXIMUM_LAG_ON_FAILOVER_BYTES
+            value: {{ .Values.ha.maximumLagOnFailoverBytes | quote }}
+          - name: KINGBASE_HA_API_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.ha.apiTokenSecretName }}
+                key: token
+          - name: KINGBASE_SYNCHRONOUS_COMMIT
+            value: {{ .Values.ha.synchronousCommit | quote }}
+          - name: KINGBASE_SYNCHRONOUS_STANDBY_NAMES
+            value: {{ .Values.ha.synchronousStandbyNames | quote }}
+          - name: KINGBASE_REBUILD_DEMOTED
+            value: {{ .Values.ha.automaticRejoin | ternary "1" "0" | quote }}
+          - name: KINGBASE_REJOIN_USE_REWIND
+            value: {{ .Values.ha.automaticRejoin | ternary "1" "0" | quote }}
+          - name: KINGBASE_PATCH_POD_ROLE
+            value: "0"
+          - name: KINGBASE_HA_PATCH_POD_ROLE
+            value: "0"
+          - name: KINGBASE_TLS_ENABLED
+            value: {{ .Values.tls.enabled | ternary "1" "0" | quote }}
+          - name: KINGBASE_REPLICATION_SSLMODE
+            value: {{ .Values.tls.sslMode | quote }}
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+        startupProbe:
+          exec:
+            command:
+              - /bin/bash
+              - -ec
+              - |
+                export KINGBASE_PASSWORD
+                "$KINGBASE_HOME/bin/ksql" -h /tmp -p "$KINGBASE_PORT" \
+                  -U "$KINGBASE_SUPERUSER" -d template1 -At -c 'select 1' >/dev/null
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 60
+        readinessProbe:
+          exec:
+            command:
+              - /bin/bash
+              - -ec
+              - |
+                export KINGBASE_PASSWORD
+                curl -fsS http://127.0.0.1:8008/healthz >/dev/null
+                "$KINGBASE_HOME/bin/ksql" -h /tmp -p "$KINGBASE_PORT" \
+                  -U "$KINGBASE_SUPERUSER" -d template1 -At -c 'select 1' >/dev/null
+          periodSeconds: 5
+          timeoutSeconds: 4
+          failureThreshold: 3
+        livenessProbe:
+          exec:
+            command:
+              - /bin/bash
+              - -ec
+              - |
+                curl -fsS http://127.0.0.1:8008/healthz >/dev/null
+                if [ "$(id -u)" = "0" ]; then
+                  setpriv --reuid=kingbase --regid=kingbase --init-groups \
+                    "$KINGBASE_HOME/bin/sys_ctl" -D "$KINGBASE_DATA_DIR" status >/dev/null
+                else
+                  "$KINGBASE_HOME/bin/sys_ctl" -D "$KINGBASE_DATA_DIR" status >/dev/null
+                fi
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+        volumeMounts:
+          - name: data
+            mountPath: /var/lib/kingbase
+          {{- if .Values.configuration.enabled }}
+          - name: kingbase-user-config
+            mountPath: /etc/kingbase/user-config
+            readOnly: true
+          {{- end }}
+          - name: license
+            mountPath: /opt/Kingbase/license
+            readOnly: true
+          {{- if .Values.tls.enabled }}
+          - name: tls
+            mountPath: /etc/kingbase/tls
+            readOnly: true
+          {{- end }}
+      {{- if .Values.monitoring.enabled }}
+      - name: exporter
+        image: {{ include "kingbase.image" . | quote }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command:
+          - /usr/bin/python3
+          - /usr/local/bin/kingbase-exporter.py
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          capabilities:
+            drop:
+              - ALL
+        ports:
+          - name: metrics
+            containerPort: 9187
+        env:
+          - name: KINGBASE_HOME
+            value: /home/kingbase/install/kingbase
+          - name: KINGBASE_PORT
+            value: "54321"
+          - name: KINGBASE_SUPERUSER
+            value: $(KINGBASE_SYSTEM_USER)
+          - name: KINGBASE_PASSWORD
+            value: $(KINGBASE_SYSTEM_PASSWORD)
+          - name: KINGBASE_DATABASE
+            value: kingbase
+          - name: KINGBASE_EXPORTER_PORT
+            value: "9187"
+          - name: KINGBASE_CLUSTER_NAME
+            value: $(KB_CLUSTER_NAME)
+          - name: KINGBASE_COMPONENT_NAME
+            value: $(KB_COMP_NAME)
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+      {{- end }}
+    volumes:
+      - name: license
+        secret:
+          secretName: {{ .Values.license.secretName }}
+          optional: {{ not .Values.license.required }}
+      {{- if .Values.tls.enabled }}
+      - name: tls
+        secret:
+          secretName: {{ .Values.tls.secretName }}
+          optional: false
+      {{- end }}

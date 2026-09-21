@@ -1,0 +1,16 @@
+# Source-only files that should stay in Git but not inflate the released chart.
+.DS_Store
+.git/
+.gitignore
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+.idea/
+.vscode/
+image/
+scripts/
+tests/
+values-test.yaml
+PRODUCTION-READINESS.md

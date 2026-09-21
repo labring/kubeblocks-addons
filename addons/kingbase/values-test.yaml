@@ -1,0 +1,76 @@
+image:
+  registry: docker.io
+  repository: wallykk/kingbase
+  tag: v9r1c10-b0004-21
+  digest: sha256:79afd89a27074c693c56fee550cdf3d3532e503a064be78d5f0891fceab4f699
+  pullPolicy: IfNotPresent
+
+componentDefinition:
+  name: kingbase-v9r1c10-test
+
+clusterDefinition:
+  name: kingbase-test
+
+rbac:
+  clusterRoleName: kingbase-test-kubeblocks-pod-role
+
+license:
+  required: true
+  secretName: kingbase-test-license
+
+tls:
+  enabled: true
+  secretName: kingbase-test-tls
+  sslMode: verify-ca
+
+ha:
+  apiTokenSecretName: kingbase-test-ha-token
+  leaseDurationSeconds: 30
+  fenceTimeoutSeconds: 15
+  retryPeriodSeconds: 2
+  switchoverCatchupTimeoutSeconds: 60
+  maximumLagOnFailoverBytes: 0
+  synchronousCommit: "on"
+  synchronousStandbyNames: "ANY 1 (*)"
+  automaticFailover: true
+  automaticRejoin: true
+
+backup:
+  actionSetName: kingbase-test-basebackup
+  policyTemplateName: kingbase-test-backup-policy-template
+  enabled: true
+  scheduleEnabled: false
+  snapshotEnabled: false
+
+configuration:
+  enabled: true
+  templateName: kingbase-test-user-configuration
+  namespace: kingbase-test
+  logMinDurationStatement: "1000"
+
+monitoring:
+  enabled: false
+  prometheusRule:
+    enabled: false
+
+cluster:
+  create: true
+  createNamespace: false
+  name: kingbase-ha-test
+  namespace: kingbase-test
+  serviceAccountName: kingbase-ha-test
+  replicas: 3
+  storageClassName: openebs-vg-lvm
+  storageSize: 640Mi
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  pdb:
+    enabled: true
+    minAvailable: 2

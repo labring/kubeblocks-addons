@@ -1,0 +1,30 @@
+image:
+  registry: docker.io
+  repository: wallykk/kingbase
+  tag: v9r1c10-b0004-21
+  digest: sha256:79afd89a27074c693c56fee550cdf3d3532e503a064be78d5f0891fceab4f699
+
+cluster:
+  create: true
+  createNamespace: false
+  name: kingbase-prod
+  namespace: kingbase-system
+  storageClassName: replicated-csi
+  storageSize: 500Gi
+  nodeSelector:
+    kubernetes.io/arch: amd64
+
+monitoring:
+  prometheusRule:
+    enabled: true
+
+configuration:
+  enabled: true
+  templateName: kingbase-user-configuration
+  namespace: kingbase-system
+  logMinDurationStatement: "1000"
+
+# Create cluster.namespace, kingbase-license, and kingbase-tls before install.
+# The target cluster's `openebs-vg-lvm` currently lacks capacity. Use this class
+# only after every anti-affinity node has 500Gi available, or select another CSI
+# class with equivalent durability and capacity per replica.

@@ -1,0 +1,22 @@
+apiVersion: v2
+name: kingbase
+description: KingbaseES V9 HA addon for KubeBlocks 0.8
+type: application
+version: 0.1.0
+appVersion: "V009R001C010B0004"
+home: https://www.kingbase.com.cn/
+keywords:
+  - kingbase
+  - database
+  - rdbms
+  - high-availability
+annotations:
+  addon.kubeblocks.io/kubeblocks-version: ">=0.8.0 <0.9.0"
+  addon.kubeblocks.io/model: RDBMS
+  addon.kubeblocks.io/provider: sealos
+maintainers:
+  - name: Sealos
+    url: https://github.com/labring
+sources:
+  - https://github.com/labring/kubeblocks-addons
+  - https://www.kingbase.com.cn/

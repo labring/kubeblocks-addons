@@ -1,0 +1,60 @@
+{{- if and .Values.cluster.create .Values.cluster.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Values.cluster.name }}-kingbase
+  namespace: {{ .Values.cluster.namespace }}
+  labels:
+    {{- include "kingbase.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kingbase.clusterSelectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "kingbase.clusterSelectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 54321
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.cluster.namespace }}
+      ports:
+        - protocol: TCP
+          port: 8008
+        - protocol: TCP
+          port: 54321
+    # KubeBlocks uses lorry for account provisioning and Component lifecycle
+    # reconciliation. Do not expose the database port to this namespace here.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.kubeblocks.namespace }}
+      ports:
+        - protocol: TCP
+          port: 3501
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{ .Values.cluster.networkPolicy.clientNamespaceLabel }}: {{ .Values.cluster.networkPolicy.clientNamespaceLabelValue | quote }}
+          podSelector:
+            matchLabels:
+              {{ .Values.cluster.networkPolicy.clientPodLabel }}: {{ .Values.cluster.networkPolicy.clientPodLabelValue | quote }}
+      ports:
+        - protocol: TCP
+          port: 54321
+    {{- if .Values.monitoring.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.monitoring.namespaceSelector | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 9187
+    {{- end }}
+{{- end }}

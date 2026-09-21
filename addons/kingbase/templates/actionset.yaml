@@ -1,0 +1,82 @@
+{{- if .Values.backup.enabled }}
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: ActionSet
+metadata:
+  name: {{ .Values.backup.actionSetName }}
+  labels:
+    {{- include "kingbase.labels" . | nindent 4 }}
+    clusterdefinition.kubeblocks.io/name: {{ .Values.clusterDefinition.name }}
+spec:
+  backupType: Full
+  env:
+    - name: DATA_DIR
+      value: /var/lib/kingbase/data
+    - name: KINGBASE_HOME
+      value: /home/kingbase/install/kingbase
+    - name: KINGBASE_SSLMODE
+      value: {{ .Values.tls.enabled | ternary "require" "disable" | quote }}
+  backup:
+    backupData:
+      image: {{ include "kingbase.image" . | quote }}
+      runOnTargetPodNode: false
+      command:
+        - /bin/bash
+        - -ec
+        - |
+          set -e
+          set -o pipefail
+          export PATH="$KINGBASE_HOME/bin:$DP_DATASAFED_BIN_PATH:$PATH"
+          export DATASAFED_BACKEND_BASE_PATH="$DP_BACKUP_BASE_PATH"
+          export KINGBASE_PASSWORD="$DP_DB_PASSWORD"
+          start_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          trap 'code=$?; if [ "$code" -ne 0 ]; then touch "${DP_BACKUP_INFO_FILE}.exit"; fi; exit "$code"' EXIT
+          "$KINGBASE_HOME/bin/sys_basebackup" \
+            -h "$DP_DB_HOST" -p "${DP_DB_PORT:-54321}" -U "$DP_DB_USER" \
+            -D - -F tar -X fetch -P -w \
+          | datasafed push -z zstd-fastest - "/${DP_BACKUP_NAME}.tar.zst"
+          end_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          total_size="$(datasafed stat / | awk '/TotalSize/ {print $2; exit}')"
+          printf '{"totalSize":"%s","timeRange":{"start":"%s","end":"%s"}}\n' \
+            "${total_size:-0}" "$start_time" "$end_time" > "$DP_BACKUP_INFO_FILE"
+      onError: Fail
+      syncProgress:
+        enabled: true
+        intervalSeconds: 10
+  restore:
+    prepareData:
+      image: {{ include "kingbase.image" . | quote }}
+      runOnTargetPodNode: false
+      command:
+        - /bin/bash
+        - -ec
+        - |
+          set -e
+          set -o pipefail
+          umask 077
+          export PATH="$DP_DATASAFED_BIN_PATH:$PATH"
+          export DATASAFED_BACKEND_BASE_PATH="$DP_BACKUP_BASE_PATH"
+          data_root="$(dirname "$DATA_DIR")"
+          mkdir -p "$DATA_DIR"
+          if find "$DATA_DIR" -mindepth 1 -maxdepth 1 | grep -q .; then
+            echo "restore target is not empty: $DATA_DIR" >&2
+            exit 1
+          fi
+          datasafed pull -d zstd-fastest "/${DP_BACKUP_NAME}.tar.zst" - \
+            | tar --no-same-owner -xf - -C "$DATA_DIR"
+          if [ "$(id -u)" = "0" ]; then
+            chown kingbase:kingbase "$data_root"
+            chown -R kingbase:kingbase "$DATA_DIR"
+          fi
+          # Make kubelet's OnRootMismatch check pass without recursively widening
+          # the restored database directory to 2770 on the target pod.
+          chmod 2770 "$data_root"
+          chmod 0700 "$DATA_DIR"
+          chmod g-s "$DATA_DIR"
+          restore_marker="$data_root/restore-from-basebackup"
+          touch "$restore_marker"
+          if [ "$(id -u)" = "0" ]; then
+            chown kingbase:kingbase "$restore_marker"
+          fi
+      onError: Fail
+    postReady: []
+{{- end }}

@@ -1,0 +1,11 @@
+# Copy this file to silent.cfg and replace it with the silent install template
+# shipped in your KingbaseES ISO.
+#
+# The exact keys differ across KingbaseES versions. Keep this file only as a
+# placeholder so the Dockerfile has a stable input name.
+
+USER_INSTALL_DIR=/opt/Kingbase/ES/V8
+CHOSEN_INSTALL_SET=Server
+DB_PORT=54321
+INIT_DB=false
+CREATE_DEMO_DB=false

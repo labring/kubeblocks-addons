@@ -1,0 +1,47 @@
+{{- if .Values.backup.enabled }}
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: BackupPolicyTemplate
+metadata:
+  name: {{ .Values.backup.policyTemplateName }}
+  labels:
+    {{- include "kingbase.labels" . | nindent 4 }}
+    clusterdefinition.kubeblocks.io/name: {{ .Values.clusterDefinition.name }}
+  annotations:
+    dataprotection.kubeblocks.io/is-default-policy-template: "true"
+spec:
+  clusterDefinitionRef: {{ .Values.clusterDefinition.name }}
+  backupPolicies:
+    - componentDefRef: kingbase
+      backoffLimit: 1
+      target:
+        role: standby
+        # sys_basebackup uses the physical replication protocol.  The system
+        # account is intentionally not permitted by the replication HBA rule.
+        account: replication
+      backupMethods:
+        - name: kingbase-basebackup
+          snapshotVolumes: false
+          actionSetName: {{ .Values.backup.actionSetName }}
+          targetVolumes:
+            volumeMounts:
+              - name: data
+                mountPath: /var/lib/kingbase
+        {{- if .Values.backup.snapshotEnabled }}
+        - name: volume-snapshot
+          snapshotVolumes: true
+          targetVolumes:
+            volumes:
+              - data
+        {{- end }}
+      schedules:
+        - backupMethod: kingbase-basebackup
+          enabled: {{ .Values.backup.scheduleEnabled }}
+          cronExpression: {{ .Values.backup.cronExpression | quote }}
+          retentionPeriod: {{ .Values.backup.retentionPeriod }}
+        {{- if .Values.backup.snapshotEnabled }}
+        - backupMethod: volume-snapshot
+          enabled: false
+          cronExpression: {{ .Values.backup.cronExpression | quote }}
+          retentionPeriod: {{ .Values.backup.retentionPeriod }}
+        {{- end }}
+{{- end }}
