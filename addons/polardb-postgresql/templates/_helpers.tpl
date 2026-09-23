@@ -24,9 +24,9 @@ If release name contains chart name it will be used as a full name.
 {{- end }}
 
 {{/*
-The ComponentDefinition name identifies an immutable HA implementation. All
-definition-scoped resources use this prefix so releases can retain an older
-definition while new clusters use the next one.
+The ComponentDefinition name identifies the canonical immutable HA
+implementation. All definition-scoped resources use this prefix so charts and
+downstream consumers agree on the same resource names.
 */}}
 {{- define "polardbPostgresql.componentDefinitionName" -}}
 {{- $name := required "ha.componentDefinition.name is required" .Values.ha.componentDefinition.name -}}
