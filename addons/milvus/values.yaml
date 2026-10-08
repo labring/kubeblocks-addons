@@ -25,8 +25,8 @@ images:
     repository: docker.io/milvusdb/etcd
     tag: 3.5.5-r2
   minio:
-    repository: docker.io/minio/minio
-    tag: RELEASE.2022-03-17T06-34-49Z
+    repository: docker.io/apecloud/minio
+    tag: RELEASE.2024-06-29T01-20-47Z
   shell_tools:
     repository: bitnami/os-shell
     tag: 11-debian-11-r90
