@@ -28,7 +28,7 @@ images:
     repository: docker.io/apecloud/minio
     tag: RELEASE.2024-06-29T01-20-47Z
   shell_tools:
-    repository: bitnami/os-shell
+    repository: docker.io/apecloud/os-shell
     tag: 11-debian-11-r90
 
 serviceAccount:
