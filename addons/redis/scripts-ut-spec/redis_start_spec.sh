@@ -577,6 +577,122 @@ Describe "Redis Start Bash Script Tests"
         The stdout should include "sentinel:sentinel-1.redis-sentinel-headless has master info: 172.18.0.3 31081"
         The stdout should include "sentinel:sentinel-2.redis-sentinel-headless has master info: 172.18.0.3 31081"
       End
+
+      It "uses sentinel primary only when it reaches quorum"
+        Skip if "shell type and version unmatch, please check!" should_skip_when_shell_type_and_version_invalid
+        build_sentinel_get_master_addr_by_name_command() {
+          case "$1" in
+            sentinel-0.redis-sentinel-headless)
+              echo "echo 'redis-0.redis-headless.default 6379'"
+              ;;
+            *)
+              echo "echo 'redis-1.redis-headless.default 6379'"
+              ;;
+          esac
+        }
+        When call init_or_get_primary_from_redis_sentinel
+        The status should be success
+        The variable primary should eq "redis-1.redis-headless.default"
+        The variable primary_port should eq "6379"
+        The stdout should include "The sentinel:sentinel-1.redis-sentinel-headless has different primary node info."
+      End
+    End
+
+    Context "when sentinels disagree without quorum"
+      setup() {
+        export SENTINEL_COMPONENT_NAME="redis-sentinel"
+        export SENTINEL_POD_FQDN_LIST="sentinel-0.redis-sentinel-headless,sentinel-1.redis-sentinel-headless"
+        export REDIS_POD_FQDN_LIST="redis-0.redis-headless.default,redis-1.redis-headless.default"
+      }
+      Before "setup"
+
+      un_setup() {
+        unset SENTINEL_COMPONENT_NAME
+        unset SENTINEL_POD_FQDN_LIST
+        unset REDIS_POD_FQDN_LIST
+      }
+      After "un_setup"
+
+      It "uses the only redis kernel master instead of selecting a split sentinel winner"
+        Skip if "shell type and version unmatch, please check!" should_skip_when_shell_type_and_version_invalid
+        build_sentinel_get_master_addr_by_name_command() {
+          case "$1" in
+            sentinel-0.redis-sentinel-headless)
+              echo "echo 'redis-0.redis-headless.default 6379'"
+              ;;
+            *)
+              echo "echo 'redis-1.redis-headless.default 6379'"
+              ;;
+          esac
+        }
+        build_redis_info_replication_command() {
+          case "$1" in
+            redis-0.redis-headless.default)
+              echo "printf 'role:slave\\nmaster_link_status:down\\n'"
+              ;;
+            *)
+              echo "printf 'role:master\\nconnected_slaves:0\\n'"
+              ;;
+          esac
+        }
+        When call init_or_get_primary_from_redis_sentinel
+        The status should be success
+        The variable primary should eq "redis-1.redis-headless.default"
+        The variable primary_port should eq "6379"
+        The stdout should include "no quorum primary found from redis sentinels, max count: 1, quorum: 2, try redis kernel status or default primary node."
+        The stdout should include "found primary from redis kernel status: redis-1.redis-headless.default:6379"
+        The stderr should include "execute redis role command:"
+      End
+
+      It "falls back to default primary when no redis kernel master exists"
+        Skip if "shell type and version unmatch, please check!" should_skip_when_shell_type_and_version_invalid
+        build_sentinel_get_master_addr_by_name_command() {
+          case "$1" in
+            sentinel-0.redis-sentinel-headless)
+              echo "echo 'redis-0.redis-headless.default 6379'"
+              ;;
+            *)
+              echo "echo 'redis-1.redis-headless.default 6379'"
+              ;;
+          esac
+        }
+        build_redis_info_replication_command() {
+          echo "printf 'role:slave\\nmaster_link_status:down\\n'"
+        }
+        get_default_initialize_primary_node() {
+          primary="redis-0.redis-headless.default"
+          primary_port="6379"
+        }
+        When call init_or_get_primary_from_redis_sentinel
+        The status should be success
+        The variable primary should eq "redis-0.redis-headless.default"
+        The variable primary_port should eq "6379"
+        The stdout should include "no quorum primary found from redis sentinels, max count: 1, quorum: 2, try redis kernel status or default primary node."
+        The stdout should include "no primary found from redis kernel status."
+        The stderr should include "execute redis role command:"
+      End
+
+      It "fails when multiple redis kernel masters exist"
+        Skip if "shell type and version unmatch, please check!" should_skip_when_shell_type_and_version_invalid
+        build_sentinel_get_master_addr_by_name_command() {
+          case "$1" in
+            sentinel-0.redis-sentinel-headless)
+              echo "echo 'redis-0.redis-headless.default 6379'"
+              ;;
+            *)
+              echo "echo 'redis-1.redis-headless.default 6379'"
+              ;;
+          esac
+        }
+        build_redis_info_replication_command() {
+          echo "printf 'role:master\\nconnected_slaves:0\\n'"
+        }
+        When run init_or_get_primary_from_redis_sentinel
+        The status should be failure
+        The stdout should include "found multiple primaries from redis kernel status, count: 2"
+        The stdout should include "multiple redis masters found from kernel status, cannot choose a safe primary. Exiting."
+        The stderr should include "execute redis role command:"
+      End
     End
 
     Context "when empty primary info is retrieved from sentinels"
@@ -612,7 +728,7 @@ Describe "Redis Start Bash Script Tests"
         The status should be success
         The stdout should include "Empty primary info retrieved from sentinel"
         The stdout should include "Failed to retrieve primary info from sentinel: sentinel-1.redis-sentinel-headless"
-        The stdout should include "no primary node found from all redis sentinels, use default primary node."
+        The stdout should include "no primary node found from all redis sentinels, try redis kernel status or default primary node."
         The stderr should include "Function 'get_master_addr_by_name_from_sentinel' failed after 1 retries"
         The variable primary should eq "fake-primary1"
         The variable primary_port should eq "fake-primary-port1"

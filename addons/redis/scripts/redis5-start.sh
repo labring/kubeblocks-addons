@@ -123,6 +123,8 @@ init_or_get_primary_from_redis_sentinel() {
   local first_redis_primary_host=""
   local first_redis_primary_port=""
   sentinel_pod_fqdn_list=($(split "$SENTINEL_POD_FQDN_LIST" ","))
+  local sentinel_count=${#sentinel_pod_fqdn_list[@]}
+  local quorum=$((sentinel_count / 2 + 1))
   for sentinel_pod_fqdn in "${sentinel_pod_fqdn_list[@]}"; do
     # get primary info from sentinel
     sentinel_pod_ip=$(getent hosts "$sentinel_pod_fqdn" | awk '{ print $1 }')
@@ -159,12 +161,15 @@ init_or_get_primary_from_redis_sentinel() {
   # if there is no primary node found, use the default primary node
   echo "get all primary info from redis sentinel master_count_map: ${master_count_map[*]}"
   if [ ${#master_count_map[@]} -eq 0 ]; then
-    echo "no primary node found from all redis sentinels, use default primary node."
-    get_default_initialize_primary_node
+    echo "no primary node found from all redis sentinels, try redis kernel status or default primary node."
+    init_primary_from_redis_kernel_or_default
     return
   fi
 
-  # get the primary node with the most counts
+  # get the primary node only when sentinels have a quorum agreement.
+  # Otherwise inspect redis kernel roles or use the deterministic default
+  # primary to avoid different pods selecting different masters during
+  # transient sentinel split-brain.
   max_count=0
   for host_port in "${!master_count_map[@]}"; do
     if (( ${master_count_map[$host_port]} > max_count )); then
@@ -173,6 +178,104 @@ init_or_get_primary_from_redis_sentinel() {
       primary_port=$(echo $host_port | cut -d: -f2)
     fi
   done
+  if (( max_count < quorum )); then
+    echo "no quorum primary found from redis sentinels, max count: $max_count, quorum: $quorum, try redis kernel status or default primary node."
+    init_primary_from_redis_kernel_or_default
+  fi
+}
+
+init_primary_from_redis_kernel_or_default() {
+  local status
+  if get_primary_from_redis_kernel; then
+    return
+  else
+    status=$?
+  fi
+  if [ "$status" -eq 2 ]; then
+    echo "multiple redis masters found from kernel status, cannot choose a safe primary. Exiting."
+    exit 1
+  fi
+  get_default_initialize_primary_node
+}
+
+build_redis_info_replication_command() {
+  local redis_pod_fqdn="$1"
+  local timeout_value=5
+  if is_empty "$REDIS_DEFAULT_PASSWORD"; then
+    echo "timeout $timeout_value redis-cli -h $redis_pod_fqdn -p $service_port INFO replication"
+  else
+    echo "timeout $timeout_value redis-cli -h $redis_pod_fqdn -p $service_port -a $REDIS_DEFAULT_PASSWORD INFO replication"
+  fi
+}
+
+get_redis_role_from_kernel() {
+  local redis_pod_fqdn="$1"
+  local redis_role_command
+  local logging_mask_password_command
+  local output
+  local exit_code
+  unset_xtrace_when_ut_mode_false
+  redis_role_command=$(build_redis_info_replication_command "$redis_pod_fqdn")
+  logging_mask_password_command="$redis_role_command"
+  if ! is_empty "$REDIS_DEFAULT_PASSWORD"; then
+    logging_mask_password_command="${redis_role_command/$REDIS_DEFAULT_PASSWORD/********}"
+  fi
+  echo "execute redis role command: $logging_mask_password_command" >&2
+  output=$(eval "$redis_role_command")
+  exit_code=$?
+  set_xtrace_when_ut_mode_false
+
+  if [ $exit_code -ne 0 ]; then
+    echo "Failed to retrieve redis role from $redis_pod_fqdn." >&2
+    return 1
+  fi
+  if echo "$output" | grep -q "^role:master"; then
+    echo "master"
+    return 0
+  fi
+  if echo "$output" | grep -q "^role:slave"; then
+    echo "slave"
+    return 0
+  fi
+  echo "Unknown redis role from $redis_pod_fqdn." >&2
+  return 1
+}
+
+get_primary_from_redis_kernel() {
+  if ! env_exist REDIS_POD_FQDN_LIST; then
+    echo "REDIS_POD_FQDN_LIST env is not set, cannot inspect redis kernel role."
+    return 1
+  fi
+
+  local redis_pod_fqdn_list
+  local redis_pod_fqdn
+  local role
+  local master_count=0
+  local master_host=""
+  redis_pod_fqdn_list=($(split "$REDIS_POD_FQDN_LIST" ","))
+  for redis_pod_fqdn in "${redis_pod_fqdn_list[@]}"; do
+    if ! role=$(get_redis_role_from_kernel "$redis_pod_fqdn"); then
+      continue
+    fi
+    echo "redis:$redis_pod_fqdn role:$role"
+    if [ "$role" = "master" ]; then
+      master_count=$((master_count + 1))
+      master_host="$redis_pod_fqdn"
+    fi
+  done
+
+  if [ "$master_count" -eq 1 ]; then
+    primary="$master_host"
+    primary_port=$service_port
+    echo "found primary from redis kernel status: $primary:$primary_port"
+    return 0
+  fi
+  if [ "$master_count" -gt 1 ]; then
+    echo "found multiple primaries from redis kernel status, count: $master_count"
+    return 2
+  fi
+  echo "no primary found from redis kernel status."
+  return 1
 }
 
 build_sentinel_get_master_addr_by_name_command() {
