@@ -249,6 +249,143 @@ spec:
                 - -c
                 - |
                   mysql -h127.0.0.1 -P3306 -uroot -N -B -e "select role from information_schema.alisql_cluster_local" | xargs echo -n
+        membershipReconfiguration:
+          switchoverAction:
+            image: "arey/mysql-client:latest"
+            command:
+              - sh
+              - -ec
+              - |
+                target_ip=$(getent ahostsv4 "$KB_RSM_TARGET_HOST" | awk 'NR == 1 { print $1 }')
+                printf '%s\n' "$target_ip" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || {
+                  echo "cannot resolve switchover target to IPv4: $KB_RSM_TARGET_HOST" >&2
+                  exit 1
+                }
+                export MYSQL_PWD="$KB_RSM_PASSWORD"
+                mysql_leader() {
+                  mysql --connect-timeout=5 -h"$KB_RSM_LEADER_HOST" -P"$KB_RSM_SERVICE_PORT" -u"$KB_RSM_USERNAME" -N -B "$@"
+                }
+                mysql_target() {
+                  mysql --connect-timeout=5 -h"$target_ip" -P3306 -u"$KB_RSM_USERNAME" -N -B "$@"
+                }
+                target_role=$(mysql_target -e "SELECT role FROM information_schema.alisql_cluster_local")
+                [ "$target_role" = "Leader" ] && exit 0
+                current_role=$(mysql_leader -e "SELECT ROLE FROM information_schema.alisql_cluster_global WHERE IP_PORT='${target_ip}:11306'")
+                [ "$current_role" = "Follower" ] || {
+                  echo "switchover target ${target_ip}:11306 is not a follower: ${current_role:-not found}" >&2
+                  exit 1
+                }
+                mysql_leader -e "CALL dbms_consensus.change_leader('${target_ip}:11306')"
+                attempt=0
+                while [ "$attempt" -lt 120 ]; do
+                  role=$(mysql_target -e "SELECT role FROM information_schema.alisql_cluster_local" 2>/dev/null || true)
+                  [ "$role" = "Leader" ] && exit 0
+                  attempt=$((attempt + 1))
+                  sleep 2
+                done
+                echo "switchover target ${target_ip} did not become leader" >&2
+                exit 1
+          memberLeaveAction:
+            image: "arey/mysql-client:latest"
+            command:
+              - sh
+              - -ec
+              - |
+                target_ip=$(getent ahostsv4 "$KB_RSM_TARGET_HOST" | awk 'NR == 1 { print $1 }')
+                printf '%s\n' "$target_ip" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || {
+                  echo "cannot resolve member-leave target to IPv4: $KB_RSM_TARGET_HOST" >&2
+                  exit 1
+                }
+                export MYSQL_PWD="$KB_RSM_PASSWORD"
+                mysql_leader() {
+                  mysql --connect-timeout=5 -h"$KB_RSM_LEADER_HOST" -P"$KB_RSM_SERVICE_PORT" -u"$KB_RSM_USERNAME" -N -B "$@"
+                }
+                target=${target_ip}:11306
+                role=$(mysql_leader -e "SELECT ROLE FROM information_schema.alisql_cluster_global WHERE IP_PORT='${target}'")
+                [ -n "$role" ] || exit 0
+                [ "$role" != "Leader" ] || {
+                  echo "refusing to remove current leader ${target}; switchover must succeed first" >&2
+                  exit 1
+                }
+                if [ "$role" = "Follower" ]; then
+                  mysql_leader -e "CALL dbms_consensus.downgrade_follower('${target}')"
+                  attempt=0
+                  while [ "$attempt" -lt 120 ]; do
+                    role=$(mysql_leader -e "SELECT ROLE FROM information_schema.alisql_cluster_global WHERE IP_PORT='${target}'")
+                    [ "$role" = "Learner" ] && break
+                    attempt=$((attempt + 1))
+                    sleep 2
+                  done
+                  [ "$role" = "Learner" ] || {
+                    echo "member ${target} did not become a learner after downgrade" >&2
+                    exit 1
+                  }
+                elif [ "$role" != "Learner" ]; then
+                  echo "refusing to remove member ${target} with unexpected role ${role}" >&2
+                  exit 1
+                fi
+                mysql_leader -e "CALL dbms_consensus.drop_learner('${target}')"
+                attempt=0
+                while [ "$attempt" -lt 120 ]; do
+                  role=$(mysql_leader -e "SELECT ROLE FROM information_schema.alisql_cluster_global WHERE IP_PORT='${target}'")
+                  [ -z "$role" ] && exit 0
+                  attempt=$((attempt + 1))
+                  sleep 2
+                done
+                echo "member ${target} remains in native consensus membership" >&2
+                exit 1
+          memberJoinAction:
+            image: "arey/mysql-client:latest"
+            command:
+              - sh
+              - -ec
+              - |
+                attempt=1
+                max_attempts=60
+                target_ip=""
+                while [ -z "$target_ip" ] || ! nc -z -w 2 "$target_ip" 11306 >/dev/null 2>&1; do
+                  target_ip=$(getent ahostsv4 "$KB_RSM_TARGET_HOST" | awk 'NR == 1 { print $1 }')
+                  if [ "$attempt" -eq "$max_attempts" ]; then
+                    printf 'member-join target %s (%s):11306 did not become reachable after %s attempts\n' "$KB_RSM_TARGET_HOST" "${target_ip:-unresolved}" "$max_attempts" >&2
+                    exit 1
+                  fi
+                  printf 'waiting for member-join target %s (%s):11306 (attempt %s/%s)\n' "$KB_RSM_TARGET_HOST" "${target_ip:-unresolved}" "$attempt" "$max_attempts" >&2
+                  attempt=$((attempt + 1))
+                  sleep 5
+                done
+                export MYSQL_PWD="$KB_RSM_PASSWORD"
+                mysql_leader() {
+                  mysql --connect-timeout=5 -h"$KB_RSM_LEADER_HOST" -P"$KB_RSM_SERVICE_PORT" -u"$KB_RSM_USERNAME" -N -B "$@"
+                }
+                target=${target_ip}:11306
+                role=$(mysql_leader -e "SELECT ROLE FROM information_schema.alisql_cluster_global WHERE IP_PORT='${target}'")
+                if [ "$role" = "Follower" ]; then
+                  exit 0
+                fi
+                if [ -z "$role" ]; then
+                  if ! mysql_leader -e "CALL dbms_consensus.add_follower('${target}')"; then
+                    # The server may have accepted the request before the client
+                    # lost its connection. Re-read membership before retrying.
+                    role=$(mysql_leader -e "SELECT ROLE FROM information_schema.alisql_cluster_global WHERE IP_PORT='${target}'")
+                    [ "$role" = "Learner" ] || [ "$role" = "Follower" ] || exit 1
+                  fi
+                elif [ "$role" != "Learner" ]; then
+                  echo "member-join target ${target} has unexpected native role ${role}" >&2
+                  exit 1
+                fi
+                attempt=0
+                while [ "$attempt" -lt 120 ]; do
+                  role=$(mysql_leader -e "SELECT ROLE FROM information_schema.alisql_cluster_global WHERE IP_PORT='${target}'")
+                  [ "$role" = "Follower" ] && exit 0
+                  [ "$role" = "Learner" ] || {
+                    echo "member-join target ${target} disappeared or has unexpected role ${role}" >&2
+                    exit 1
+                  }
+                  attempt=$((attempt + 1))
+                  sleep 2
+                done
+                echo "member-join target ${target} did not become a follower" >&2
+                exit 1
         memberUpdateStrategy: Serial
       service:
         ports:
