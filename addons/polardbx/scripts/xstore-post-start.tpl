@@ -12,6 +12,8 @@ while [ $i -lt $(eval echo \$KB_"$TYPE_NAME"_N) ]; do
   hostname=$(eval echo \$KB_"$TYPE_NAME"_"$i"_HOSTNAME)
   pod=$(echo "$hostname" | cut -d'.' -f1)
 
+  # Keep stable service DNS names here. Join actions resolve the target to
+  # IPv4 when invoking the native consensus membership procedure.
   NODE_OBJECT=$(printf '{"pod": "%s", "host": "%s", "port": 11306, "role": "candidate", "node_name": "%s" }' "$pod" "$hostname" "$pod")
   SHARED_CHANNEL_JSON+="$NODE_OBJECT,"
   i=$(( i + 1))

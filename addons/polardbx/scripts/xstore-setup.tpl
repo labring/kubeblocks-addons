@@ -14,4 +14,5 @@ function setup_account() {
 
 
 setup_account &
+
 /tools/xstore/current/venv/bin/python3 /tools/xstore/current/entrypoint.py
