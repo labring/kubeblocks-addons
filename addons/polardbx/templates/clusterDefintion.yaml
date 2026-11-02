@@ -358,24 +358,24 @@ spec:
                   mysql --connect-timeout=5 -h"$KB_RSM_LEADER_HOST" -P"$KB_RSM_SERVICE_PORT" -u"$KB_RSM_USERNAME" -N -B "$@"
                 }
                 target=${target_ip}:11306
-                role=$(mysql_leader -e "SELECT ROLE FROM information_schema.alisql_cluster_global WHERE IP_PORT='${target}'")
+                role=$(mysql_leader -e "SELECT ROLE FROM information_schema.alisql_cluster_global WHERE IP_PORT='${target}'" 2>/dev/null || true)
                 if [ -z "$role" ]; then
                   if ! mysql_leader -e "CALL dbms_consensus.add_follower('${target}')"; then
                     # The server may have accepted the request before the client
-                    # lost its connection. Re-read membership before retrying.
-                    role=$(mysql_leader -e "SELECT ROLE FROM information_schema.alisql_cluster_global WHERE IP_PORT='${target}'")
-                    [ "$role" = "Learner" ] || [ "$role" = "Follower" ] || exit 1
+                    # lost its connection, or another consensus command may be
+                    # in flight. Poll native membership before deciding it failed.
+                    echo "add_follower did not return successfully for ${target}; waiting for native membership" >&2
                   fi
-                elif [ "$role" != "Learner" ]; then
+                elif [ "$role" != "Learner" ] && [ "$role" != "Follower" ]; then
                   echo "member-join target ${target} has unexpected native role ${role}" >&2
                   exit 1
                 fi
                 attempt=0
                 while [ "$attempt" -lt 120 ]; do
-                  role=$(mysql_leader -e "SELECT ROLE FROM information_schema.alisql_cluster_global WHERE IP_PORT='${target}'")
+                  role=$(mysql_leader -e "SELECT ROLE FROM information_schema.alisql_cluster_global WHERE IP_PORT='${target}'" 2>/dev/null || true)
                   local_role=$(mysql --connect-timeout=5 -h"$target_ip" -P3306 -u"$KB_RSM_USERNAME" -N -B -e "SELECT role FROM information_schema.alisql_cluster_local" 2>/dev/null || true)
                   [ "$role" = "Follower" ] && [ "$local_role" = "Follower" ] && exit 0
-                  [ "$role" = "Learner" ] || [ "$role" = "Follower" ] || {
+                  [ -z "$role" ] || [ "$role" = "Learner" ] || [ "$role" = "Follower" ] || {
                     echo "member-join target ${target} disappeared or has unexpected role ${role}" >&2
                     exit 1
                   }
