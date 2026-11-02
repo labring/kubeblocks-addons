@@ -320,7 +320,7 @@ spec:
                     echo "member ${target} did not become a learner after downgrade" >&2
                     exit 1
                   }
-                elif [ "$role" != "Learner" ]; then
+                elif [ "$role" != "Learner" ] && [ "$role" != "Follower" ]; then
                   echo "refusing to remove member ${target} with unexpected role ${role}" >&2
                   exit 1
                 fi
@@ -359,9 +359,6 @@ spec:
                 }
                 target=${target_ip}:11306
                 role=$(mysql_leader -e "SELECT ROLE FROM information_schema.alisql_cluster_global WHERE IP_PORT='${target}'")
-                if [ "$role" = "Follower" ]; then
-                  exit 0
-                fi
                 if [ -z "$role" ]; then
                   if ! mysql_leader -e "CALL dbms_consensus.add_follower('${target}')"; then
                     # The server may have accepted the request before the client
@@ -376,15 +373,16 @@ spec:
                 attempt=0
                 while [ "$attempt" -lt 120 ]; do
                   role=$(mysql_leader -e "SELECT ROLE FROM information_schema.alisql_cluster_global WHERE IP_PORT='${target}'")
-                  [ "$role" = "Follower" ] && exit 0
-                  [ "$role" = "Learner" ] || {
+                  local_role=$(mysql --connect-timeout=5 -h"$target_ip" -P3306 -u"$KB_RSM_USERNAME" -N -B -e "SELECT role FROM information_schema.alisql_cluster_local" 2>/dev/null || true)
+                  [ "$role" = "Follower" ] && [ "$local_role" = "Follower" ] && exit 0
+                  [ "$role" = "Learner" ] || [ "$role" = "Follower" ] || {
                     echo "member-join target ${target} disappeared or has unexpected role ${role}" >&2
                     exit 1
                   }
                   attempt=$((attempt + 1))
                   sleep 2
                 done
-                echo "member-join target ${target} did not become a follower" >&2
+                echo "member-join target ${target} did not become a voting follower (global=${role:-not found}, local=${local_role:-unavailable})" >&2
                 exit 1
         memberUpdateStrategy: Serial
       service:
