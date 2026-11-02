@@ -358,7 +358,21 @@ spec:
                   mysql --connect-timeout=5 -h"$KB_RSM_LEADER_HOST" -P"$KB_RSM_SERVICE_PORT" -u"$KB_RSM_USERNAME" -N -B "$@"
                 }
                 target=${target_ip}:11306
-                role=$(mysql_leader -e "SELECT ROLE FROM information_schema.alisql_cluster_global WHERE IP_PORT='${target}'" 2>/dev/null || true)
+                query_attempt=0
+                query_ok=0
+                role=""
+                while [ "$query_attempt" -lt 12 ]; do
+                  if role=$(mysql_leader -e "SELECT ROLE FROM information_schema.alisql_cluster_global WHERE IP_PORT='${target}'" 2>/dev/null); then
+                    query_ok=1
+                    break
+                  fi
+                  query_attempt=$((query_attempt + 1))
+                  sleep 2
+                done
+                [ "$query_ok" -eq 1 ] || {
+                  echo "could not read native membership for ${target} before join" >&2
+                  exit 1
+                }
                 if [ -z "$role" ]; then
                   if ! mysql_leader -e "CALL dbms_consensus.add_follower('${target}')"; then
                     # The server may have accepted the request before the client
