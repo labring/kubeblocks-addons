@@ -7,10 +7,19 @@ import yaml
 
 def write_file(config, filename, overwrite):
     if not overwrite and os.path.exists(filename):
-        pass
-    else:
-        with open(filename, 'w') as f:
-            f.write(config)
+        return
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(filename, flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        f = os.fdopen(fd, 'w')
+    except Exception:
+        os.close(fd)
+        raise
+
+    with f:
+        f.write(config)
+        f.flush()
 
 
 def read_file_lines(file):
@@ -20,6 +29,20 @@ def read_file_lines(file):
         if line and not line.startswith('#'):
             ret.append(line)
     return ret
+
+
+def configure_restapi_authentication(config):
+    username = os.environ.get('PATRONI_RESTAPI_USERNAME')
+    password = os.environ.get('PATRONI_RESTAPI_PASSWORD')
+    if username is None and password is None:
+        return
+    if not username or not password:
+        raise ValueError(
+            'PATRONI_RESTAPI_USERNAME and PATRONI_RESTAPI_PASSWORD must be set together and non-empty')
+    config.setdefault('restapi', {})['authentication'] = {
+        'username': username,
+        'password': password,
+    }
 
 
 def postgresql_conf_to_dict(file_path):
@@ -46,6 +69,8 @@ def main(filename):
     # set postgresql parameters
     if 'postgresql' not in local_config:
         local_config['postgresql'] = {}
+    configure_restapi_authentication(local_config)
+
     postgresql = local_config['postgresql']
     postgresql['config_dir'] = '/home/postgres/pgdata/conf'
     postgresql['custom_conf'] = '/home/postgres/conf/postgresql.conf'

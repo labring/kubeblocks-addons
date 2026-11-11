@@ -56,6 +56,15 @@ shmVolume:
   ##
   sizeLimit: ""
 
+## @section Patroni Parameters
+patroni:
+  restAPIAuthentication:
+    ## @param patroni.restAPIAuthentication.enabled Enable Patroni REST API Basic Authentication.
+    ## Credentials are taken from the component-generated postgres system account, so each
+    ## PostgreSQL component receives independent random credentials without user-created Secrets.
+    ##
+    enabled: false
+
 ## @section Metrics Parameters
 metrics:
   ## @param metrics.image.registry PostgreSQL Prometheus Exporter image registry

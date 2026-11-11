@@ -32,6 +32,12 @@ Describe "PostgreSQL Switchover Script Tests"
       Before 'setup'
 
       It "exits with an error"
+        patroni_curl() {
+          echo '{"members":[]}'
+        }
+        jq() {
+          echo "pod1"
+        }
         When run switchover
         The output should include "CURRENT_POD_NAME is not set. Exiting..."
         The status should be failure

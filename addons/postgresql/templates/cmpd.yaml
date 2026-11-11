@@ -132,6 +132,22 @@ spec:
           name: etcd
           endpoint: Required
           optional: true
+    {{- if $.Values.patroni.restAPIAuthentication.enabled }}
+    - name: PATRONI_RESTAPI_USERNAME
+      valueFrom:
+        credentialVarRef:
+          compDef: {{ $compDefName }}
+          name: postgres
+          optional: false
+          username: Required
+    - name: PATRONI_RESTAPI_PASSWORD
+      valueFrom:
+        credentialVarRef:
+          compDef: {{ $compDefName }}
+          name: postgres
+          optional: false
+          password: Required
+    {{- end }}
     - name: POSTGRES_USER
       valueFrom:
         credentialVarRef:
