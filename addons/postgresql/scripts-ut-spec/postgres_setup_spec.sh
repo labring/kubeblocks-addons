@@ -108,9 +108,7 @@ Describe "PostgreSQL Initialization Script Tests"
       The stdout should include "/home/postgres/.kb_set_up.log: No such file or directory"
       The stderr should include "/home/postgres/.kb_set_up.log: No such file or directory"
       The status should be success
-      The file "tmp_patroni.yaml" should be exist
-      The contents of file "tmp_patroni.yaml" should include "bootstrap:"
-      The contents of file "tmp_patroni.yaml" should include "auth-host: md5"
+      The file "tmp_patroni.yaml" should not be exist
       The variable SPILO_CONFIGURATION should not be undefined
       The variable SPILO_CONFIGURATION should include "bootstrap:"
       The variable SPILO_CONFIGURATION should include "auth-host: md5"

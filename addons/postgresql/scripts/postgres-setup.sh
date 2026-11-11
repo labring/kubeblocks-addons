@@ -4,7 +4,7 @@ tmp_patroni_yaml="tmp_patroni.yaml"
 
 function wait_pod_restarted() {
   for i in $(seq 1 10); do
-    pending_restart=$(curl --connect-timeout 3 -s http://localhost:8008/cluster | jq -r ".members[] | select(.name == \"${CURRENT_POD_NAME}\") | .pending_restart")
+    pending_restart=$(patroni_curl --connect-timeout 3 -s http://localhost:8008/cluster | jq -r ".members[] | select(.name == \"${CURRENT_POD_NAME}\") | .pending_restart")
     if [[ "${pending_restart}" != "true" ]]; then
       break
     fi
@@ -22,7 +22,7 @@ function restart_for_pending_restart_flag() {
   while true; do
     sleep 5
     pod_info_tmp_path="/tmp/pod_info.tmp"
-    curl --connect-timeout 3 -s http://localhost:8008 > ${pod_info_tmp_path}
+    patroni_curl --connect-timeout 3 -s http://localhost:8008 > ${pod_info_tmp_path}
 
     if grep -q "pending_restart" ${pod_info_tmp_path}; then
       pod_info=$(<${pod_info_tmp_path})
@@ -46,7 +46,7 @@ function restart_for_pending_restart_flag() {
     fi
 
     result_tmp_path="/tmp/cluster_result.tmp"
-    curl --connect-timeout 3 -s http://localhost:8008/cluster > ${result_tmp_path}
+    patroni_curl --connect-timeout 3 -s http://localhost:8008/cluster > ${result_tmp_path}
     result=$(<${result_tmp_path})
     rm -f ${result_tmp_path}
 
@@ -63,11 +63,11 @@ function restart_for_pending_restart_flag() {
     fi
     # Re-check pending_restart to avoid duplicate restarts
     sleep 5
-    pending_restart=$(curl --connect-timeout 3 -s http://localhost:8008 | jq -r .pending_restart)
+    pending_restart=$(patroni_curl --connect-timeout 3 -s http://localhost:8008 | jq -r .pending_restart)
     if [[ "${pending_restart}" == "true" && (-z $leader_pending_restart_pod || "${leader_pod}" == "${CURRENT_POD_NAME}") ]]; then
       # if leader pod is not pending_restart or current pod is leader pod, restart it
       echo "$(date) ${CURRENT_POD_NAME} is pending restart, restart it"
-      curl -XPOST http://localhost:8008/restart
+      patroni_curl -XPOST http://localhost:8008/restart
       wait_pod_restarted
     fi
   done
@@ -78,6 +78,8 @@ load_common_library() {
   common_library_file="/kb-scripts/common.sh"
   # shellcheck disable=SC1090
   source "${common_library_file}"
+  # shellcheck disable=SC1090
+  source /kb-scripts/patroni-curl.sh
 }
 
 init_etcd_dcs_config_if_needed() {
@@ -107,9 +109,18 @@ regenerate_spilo_configuration_and_start_postgres() {
   fi
   # Ensure postgres user owns the entire config directory (Patroni needs to write pg_hba.conf, etc.)
   chown -R postgres:postgres /home/postgres/pgdata/conf
-  python3 /kb-scripts/generate_patroni_yaml.py $tmp_patroni_yaml
-  # SPILO_CONFIGURATION is defined by spilo image
-  SPILO_CONFIGURATION=$(cat $tmp_patroni_yaml)
+  rm -f "$tmp_patroni_yaml"
+  if ! python3 /kb-scripts/generate_patroni_yaml.py "$tmp_patroni_yaml"; then
+    echo "failed to generate the Patroni configuration" >&2
+    return 1
+  fi
+  # The generated file may contain REST API credentials and is removed after it is loaded.
+  if ! SPILO_CONFIGURATION=$(cat "$tmp_patroni_yaml"); then
+    rm -f "$tmp_patroni_yaml"
+    echo "failed to read the generated Patroni configuration" >&2
+    return 1
+  fi
+  rm -f "$tmp_patroni_yaml"
   export SPILO_CONFIGURATION
   exec /launch.sh init
 }

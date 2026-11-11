@@ -2,6 +2,10 @@
 # Script to reload Patroni configuration for PostgreSQL
 set -e
 
+if ! type patroni_curl >/dev/null 2>&1; then
+    source /kb-scripts/patroni-curl.sh
+fi
+
 process_standby_config() {
     local is_standby
     is_standby=$(echo "${PG_MODE:-}" | tr '[:upper:]' '[:lower:]' | grep -q "standby" && echo "true" || echo "false")
@@ -13,7 +17,7 @@ process_standby_config() {
     local max_retries=5
 
     while [ $retry_count -lt $max_retries ]; do
-        result=$(curl -s ${patroniurl}/config)
+        result=$(patroni_curl -s ${patroniurl}/config)
         if [ $? -eq 0 ] && [ -n "$result" ]; then
             break
         fi
@@ -50,14 +54,14 @@ process_standby_config() {
         if [[ -n "$env_host" && -n "$env_port" ]]; then
             local patch_config="{\"standby_cluster\":{\"create_replica_methods\":[\"basebackup_fast_xlog\"],\"host\":\"$env_host\",\"port\":$env_port}}"
             echo "patch_config: $patch_config"
-            curl -X PATCH -d "$patch_config" ${patroniurl}/config
+            patroni_curl -X PATCH -d "$patch_config" ${patroniurl}/config
         else
             echo "env_host: $env_host, env_port: $env_port, need_patch: false"
         fi
     else
         # Clear standby config if it exists and we're not in remote backup mode
         echo "Clear standby config"
-        curl -X PATCH -d '{"standby_cluster":null}' ${patroniurl}/config
+        patroni_curl -X PATCH -d '{"standby_cluster":null}' ${patroniurl}/config
     fi
 }
 

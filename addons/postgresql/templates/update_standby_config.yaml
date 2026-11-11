@@ -16,6 +16,16 @@ spec:
           valueFrom:
             envRef:
               envName: CURRENT_POD_IP
+        {{- if .Values.patroni.restAPIAuthentication.enabled }}
+        - name: PATRONI_RESTAPI_USERNAME
+          valueFrom:
+            envRef:
+              envName: PATRONI_RESTAPI_USERNAME
+        - name: PATRONI_RESTAPI_PASSWORD
+          valueFrom:
+            envRef:
+              envName: PATRONI_RESTAPI_PASSWORD
+        {{- end }}
   parametersSchema:
     openAPIV3Schema:
       properties:
@@ -43,4 +53,5 @@ spec:
                 - bash
                 - -c
                 - |
+                  {{- .Files.Get "scripts/patroni-curl.sh" | nindent 18 }}
                   {{- .Files.Get "scripts/reload_patroni_config.sh" | nindent 18 }}

@@ -22,6 +22,8 @@ load_common_library() {
   common_library_file="/kb-scripts/common.sh"
   # shellcheck disable=SC1090
   source "${common_library_file}"
+  # shellcheck disable=SC1090
+  source /kb-scripts/patroni-curl.sh
 }
 
 switchover_with_candidate() {
@@ -31,7 +33,7 @@ switchover_with_candidate() {
   local candidate_pod_name=$3
   # TODO: check the role in kernel before switchover
   echo "Current pod: ${current_pod_fqdn} perform switchover with candidate. Leader: ${current_primary_pod_name}, Candidate: ${candidate_pod_name}"
-  switchover_output=$(curl -s "http://127.0.0.1:8008/switchover" -XPOST -d "{\"leader\":\"${current_primary_pod_name}\",\"candidate\":\"${candidate_pod_name}\"}")
+  switchover_output=$(patroni_curl -s "http://127.0.0.1:8008/switchover" -XPOST -d "{\"leader\":\"${current_primary_pod_name}\",\"candidate\":\"${candidate_pod_name}\"}")
   echo "Switchover with candidate output: ${switchover_output}"
   # TODO: check switchover result
 }
@@ -42,14 +44,14 @@ switchover_without_candidate() {
   local current_primary_pod_name=$2
   # TODO: check the role in kernel before switchover
   echo "Current pod: ${current_pod_fqdn} perform switchover without candidate. Leader: ${current_primary_pod_name}"
-  switchover_output=$(curl -s "http://127.0.0.1:8008/switchover" -XPOST -d "{\"leader\":\"${current_primary_pod_name}\"}")
+  switchover_output=$(patroni_curl -s "http://127.0.0.1:8008/switchover" -XPOST -d "{\"leader\":\"${current_primary_pod_name}\"}")
   echo "Switchover without candidate output: ${switchover_output}"
   # TODO: check switchover result
 }
 
 switchover() {
 
-  POSTGRES_PRIMARY_POD_NAME=$(curl -s http://localhost:8008/cluster | jq -r '.members[] | select (.role == "leader") | .name')
+  POSTGRES_PRIMARY_POD_NAME=$(patroni_curl -s http://localhost:8008/cluster | jq -r '.members[] | select (.role == "leader") | .name')
 
   # CURRENT_POD_NAME defined in the switchover action env
   if is_empty "$CURRENT_POD_NAME" ; then

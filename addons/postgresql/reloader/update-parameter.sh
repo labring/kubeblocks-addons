@@ -20,6 +20,8 @@ in_array() {
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 BOOTSTRAP_FILE="${SCRIPT_DIR}/restart-parameter.yaml"
 PATRONI_PARAMS_FILE="${SCRIPT_DIR}/patroni-parameter.yaml"
+# shellcheck disable=SC1091
+. "${SCRIPT_DIR}/patroni-curl.sh"
 
 restart_params=$(parse_yaml_array "$BOOTSTRAP_FILE")
 patroni_params=$(parse_yaml_array "$PATRONI_PARAMS_FILE")
@@ -39,13 +41,13 @@ fi
 
 in_array "$paramName" "$restart_params" && command="restart"
 
-curl -s -X PATCH -H "Content-Type: application/json" \
+patroni_curl -s -X PATCH -H "Content-Type: application/json" \
     --data "$json_params" \
     "http://localhost:8008/config"
 
 if [ "$command" = "restart" ]; then
-    curl -s -X POST "http://localhost:8008/restart"
+    patroni_curl -s -X POST "http://localhost:8008/restart"
 else
-    curl -s -X POST "http://localhost:8008/reload"
+    patroni_curl -s -X POST "http://localhost:8008/reload"
 fi
 
