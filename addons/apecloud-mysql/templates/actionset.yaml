@@ -18,7 +18,16 @@ spec:
     - name: SIGNAL_FILE
       value: .xtrabackup_restore_new_cluster
   backup:
-    preBackup: []
+    preBackup:
+    - job:
+        image: {{ .Values.image.registry | default "docker.io" }}/{{ .Values.image.repository }}:{{ .Values.image.tag }}
+        runOnTargetPodNode: false
+        command:
+        - bash
+        - -c
+        - |
+          {{- .Files.Get "dataprotection/pre-backup.sh" | nindent 10 }}
+        onError: Fail
     postBackup: []
     backupData:
       image: {{ include "apecloud-mysql.bakcupToolImage" . }}
